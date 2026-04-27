@@ -21,7 +21,7 @@ import functools
 import inspect
 import sqlite3
 from collections.abc import Callable
-from typing import Any
+from typing import Any, Protocol, cast, overload
 
 from . import _registry, _storage
 from ._adapter import Adapter
@@ -47,6 +47,39 @@ from ._recorder import (
 # ---------------------------------------------------------------------------
 
 
+class _RecordedCallable(Protocol):
+    """Shape of values returned by `@recorder`.
+
+    The decorator monkey-patches `kind`, `_entry`, `_is_async`, and the
+    cross-mode shims (`.sync`, `.async_run`, `.submit`) onto a wrapper
+    function. The shims are typed as callable attributes (not methods)
+    because they are attached as plain closures, not bound methods —
+    matching the runtime shape lets type checkers accept the assignments
+    without suppressions.
+    """
+
+    kind: str
+    _entry: _registry.RegistryEntry
+    _is_async: bool
+    sync: Callable[..., Any]
+    async_run: Callable[..., Any]
+    submit: Callable[..., Any]
+
+    def __call__(self, *args: Any, **kwargs: Any) -> Any: ...
+
+
+@overload
+def recorder(fn: Callable[..., Any], /) -> _RecordedCallable: ...
+@overload
+def recorder(
+    fn: None = None,
+    *,
+    kind: str | None = None,
+    request: type | None = None,
+    response: type | None = None,
+    data: type | None = None,
+    error: type | None = None,
+) -> Callable[[Callable[..., Any]], _RecordedCallable]: ...
 def recorder(
     fn: Callable[..., Any] | None = None,
     *,
@@ -62,9 +95,9 @@ def recorder(
     The wrapper preserves the wrapped function's calling convention.
     """
 
-    def decorate(fn: Callable[..., Any]) -> Any:
+    def decorate(fn: Callable[..., Any]) -> _RecordedCallable:
         auto_kind = kind is None
-        actual_kind = kind or f"{fn.__module__}.{fn.__qualname__}"
+        actual_kind = kind or f"{fn.__module__}.{fn.__qualname__}"  # type: ignore
 
         entry = _registry.RegistryEntry(
             kind=actual_kind,
@@ -82,9 +115,9 @@ def recorder(
         else:
             wrapper = _build_sync_wrapper(fn, entry)
 
-        wrapper.kind = actual_kind  # type: ignore[attr-defined]
-        wrapper._entry = entry  # type: ignore[attr-defined]
-        wrapper._is_async = inspect.iscoroutinefunction(fn)  # type: ignore[attr-defined]
+        wrapper.kind = actual_kind
+        wrapper._entry = entry
+        wrapper._is_async = inspect.iscoroutinefunction(fn)
         return wrapper
 
     if fn is not None:
@@ -99,7 +132,7 @@ def recorder(
 
 def _build_async_wrapper(
     fn: Callable[..., Any], entry: _registry.RegistryEntry
-) -> Callable[..., Any]:
+) -> _RecordedCallable:
     @functools.wraps(fn)
     async def async_wrapper(
         *args: Any,
@@ -147,13 +180,14 @@ def _build_async_wrapper(
             recorder_inst, entry, job_id, key, _invoke
         )
 
-    _attach_call_modes(async_wrapper, fn, entry, is_async=True)
-    return async_wrapper
+    typed = cast(_RecordedCallable, async_wrapper)
+    _attach_call_modes(typed, fn, entry, is_async=True)
+    return typed
 
 
 def _build_sync_wrapper(
     fn: Callable[..., Any], entry: _registry.RegistryEntry
-) -> Callable[..., Any]:
+) -> _RecordedCallable:
     @functools.wraps(fn)
     def sync_wrapper(
         *args: Any,
@@ -186,8 +220,9 @@ def _build_sync_wrapper(
             recorder_inst, entry, job_id, key, lambda: fn(*args, **kwargs)
         )
 
-    _attach_call_modes(sync_wrapper, fn, entry, is_async=False)
-    return sync_wrapper
+    typed = cast(_RecordedCallable, sync_wrapper)
+    _attach_call_modes(typed, fn, entry, is_async=False)
+    return typed
 
 
 # ---------------------------------------------------------------------------
@@ -196,7 +231,7 @@ def _build_sync_wrapper(
 
 
 def _attach_call_modes(
-    wrapper: Callable[..., Any],
+    wrapper: _RecordedCallable,
     fn: Callable[..., Any],
     entry: _registry.RegistryEntry,
     *,
@@ -217,7 +252,7 @@ def _attach_call_modes(
                 pass
             else:
                 raise SyncInLoopError(
-                    f"{fn.__qualname__}.sync() was called from inside a running "
+                    f"{fn.__qualname__}.sync() was called from inside a running "  # type: ignore
                     "event loop. Use `await place_order(req)` directly from the "
                     "async context, or move the call to a synchronous entry point."
                 )
@@ -227,8 +262,8 @@ def _attach_call_modes(
             # Already async; just await the wrapper.
             return await wrapper(*args, **kwargs)
 
-        wrapper.sync = _sync  # type: ignore[attr-defined]
-        wrapper.async_run = _async_run  # type: ignore[attr-defined]
+        wrapper.sync = _sync
+        wrapper.async_run = _async_run
     else:
         def _sync(*args: Any, **kwargs: Any) -> Any:
             # Already sync; just call the wrapper.
@@ -239,8 +274,8 @@ def _attach_call_modes(
             # don't block the loop. contextvars propagate via to_thread.
             return await asyncio.to_thread(wrapper, *args, **kwargs)
 
-        wrapper.sync = _sync  # type: ignore[attr-defined]
-        wrapper.async_run = _async_run  # type: ignore[attr-defined]
+        wrapper.sync = _sync
+        wrapper.async_run = _async_run
 
     # `.submit(req, key=None, retry_failed=True)` — INSERT pending and return
     # a JobHandle. Worker (lazy-started on the Recorder) picks up the row.
@@ -282,7 +317,7 @@ def _attach_call_modes(
         recorder_inst._ensure_worker()
         return JobHandle(job_id, recorder_inst, entry.kind)
 
-    wrapper.submit = _submit  # type: ignore[attr-defined]
+    wrapper.submit = _submit
 
 
 # ---------------------------------------------------------------------------
