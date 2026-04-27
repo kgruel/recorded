@@ -44,7 +44,11 @@ class Worker:
         self.recorder = recorder
         self._loop: asyncio.AbstractEventLoop | None = None
         self._thread: threading.Thread | None = None
-        self._loop_shutdown: asyncio.Event | None = None
+        # asyncio.Event in 3.10+ binds to a loop on first use, not at
+        # construction — safe to create here on the main thread; the
+        # binding lands on the worker loop the first time `_main()`
+        # touches it.
+        self._loop_shutdown = asyncio.Event()
         self._loop_ready = threading.Event()
         self._started = False
         self._shutdown_called = False
@@ -61,8 +65,8 @@ class Worker:
                 target=self._run, name="recorded-worker", daemon=True
             )
             self._thread.start()
-        # Block until the loop is created and the shutdown event exists,
-        # so a `submit()` racing the start has a coherent target.
+        # Block until the loop is created so a `submit()` racing the
+        # start has a coherent target.
         self._loop_ready.wait()
 
     # ----- thread entrypoint -----
@@ -71,8 +75,6 @@ class Worker:
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
         self._loop = loop
-        # Construct the asyncio.Event inside the loop's thread.
-        self._loop_shutdown = asyncio.Event()
         self._loop_ready.set()
         try:
             loop.run_until_complete(self._main())
@@ -220,9 +222,8 @@ class Worker:
         # the event-set on the loop's thread so the existing
         # `wait_for(self._loop_shutdown.wait(), ...)` resolves.
         loop = self._loop
-        evt = self._loop_shutdown
-        if loop is not None and evt is not None and not loop.is_closed():
-            loop.call_soon_threadsafe(evt.set)
+        if loop is not None and not loop.is_closed():
+            loop.call_soon_threadsafe(self._loop_shutdown.set)
 
         if self._thread is not None:
             self._thread.join(timeout=timeout)
