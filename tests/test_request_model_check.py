@@ -52,3 +52,39 @@ def test_request_model_single_positional_arg_still_works(default_recorder):
 
     out = fn(PlaceOrder(customer_id=42, quantity=2))
     assert out == {"customer_id": 42}
+
+
+def test_submit_with_multi_positional_args_raises_configuration_error(
+    default_recorder,
+):
+    """`.submit()` round-trips the captured request through JSON to the
+    worker. Multi-arg / kwarg envelopes can't be unpacked unambiguously
+    on the worker side, so the surface refuses them at submit time."""
+
+    @recorder(kind="t.submit.multi_args")
+    def fn(a, b):
+        return {"a": a, "b": b}
+
+    with pytest.raises(ConfigurationError, match=r"\.submit\(\) requires single-positional-arg"):
+        fn.submit(1, 2)
+
+
+def test_submit_with_kwargs_raises_configuration_error(default_recorder):
+    @recorder(kind="t.submit.with_kwargs")
+    def fn(req, *, extra=None):
+        return {"req": req, "extra": extra}
+
+    with pytest.raises(ConfigurationError, match=r"\.submit\(\) requires single-positional-arg"):
+        fn.submit("hello", extra="x")
+
+
+def test_submit_with_single_positional_arg_still_works(default_recorder):
+    """Single-positional-arg `.submit()` is the supported shape."""
+
+    @recorder(kind="t.submit.single_ok")
+    def fn(x):
+        return {"x": x}
+
+    handle = fn.submit(99)
+    job = handle.wait_sync(timeout=5.0)
+    assert job.response == {"x": 99}

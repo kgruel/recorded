@@ -56,10 +56,12 @@ def _validate_call_args(
     key: str | None,
     args: tuple[Any, ...] = (),
     kwargs: dict[str, Any] | None = None,
+    *,
+    submit: bool = False,
 ) -> None:
     """Call-time validation of decorator + call-shape combinations.
 
-    Two checks, both refuse-to-compile rather than silently mis-record:
+    Three checks, all refuse-to-compile rather than silently mis-record:
 
     1. `key=` against an auto-derived kind. The default kind comes from
        `f"{module}.{qualname}"` and silently changes when the function
@@ -71,6 +73,14 @@ def _validate_call_args(
        shape can't be validated through a typed request model. Mirrors
        the `key=` + auto-kind precedent: misuse caught at call time, not
        silently mis-recorded.
+
+    3. `.submit()` against a multi-argument call shape (with or without
+       `request=Model`). The worker reconstructs the call from the stored
+       request envelope; round-tripping `{args, kwargs}` and unpacking
+       it generically can collide with naturally-shaped dicts. Multi-arg
+       `.submit()` requires a `request=Model` that defines the call's
+       shape, OR use the bare-call form (which has the live args and
+       never round-trips).
     """
     if key is not None and entry.auto_kind:
         raise ConfigurationError(
@@ -85,6 +95,15 @@ def _validate_call_args(
                 f"{entry.kind}: request=Model requires single-positional-arg "
                 f"call shape; got args={len(args)}, kwargs={list(kw)}. "
                 "Either drop request=Model or simplify the call shape."
+            )
+    if submit:
+        kw = kwargs or {}
+        if len(args) != 1 or kw:
+            raise ConfigurationError(
+                f"{entry.kind}: .submit() requires single-positional-arg "
+                f"call shape; got args={len(args)}, kwargs={list(kw)}. "
+                "Wrap multi-arg signatures with request=Model so the worker "
+                "can reconstruct the call, or use the bare call form."
             )
 
 

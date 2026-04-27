@@ -317,7 +317,7 @@ def _attach_call_modes(
     def _submit(*args: Any, key: str | None = None, retry_failed: bool = True, **kwargs: Any) -> Any:
         from ._handle import JobHandle
 
-        _validate_call_args(entry, key, args, kwargs)
+        _validate_call_args(entry, key, args, kwargs, submit=True)
         recorder_inst = get_default()
 
         if key is not None:
