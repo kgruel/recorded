@@ -137,11 +137,15 @@ def _serialize_error(entry: _registry.RegistryEntry, exc: BaseException) -> str:
     """Compose the JSON payload written to `error_json`.
 
     Default shape: `{type: <ExcClass>, message: <str(exc)>}` derived from
-    the live exception. If the wrapped function called `attach_error(...)`
-    on the current `JobContext` AND the decorator was registered with an
-    `error=Model`, the attached payload is validated through that adapter
-    and used instead — this is the `error=Model` wiring promised by the
-    decorator parameter.
+    the live exception. If the wrapped function called `attach_error(...)`,
+    the attached payload is routed through `entry.error.serialize(...)`
+    and used instead. Works in both modes:
+
+    - `error=Model` (typed): the payload is validated by construction
+      through the model and dumped.
+    - passthrough (no `error=Model`): the payload is `_to_native`-rendered
+      and stored as-is. No model declaration required for advanced devs
+      who want structured error payloads without committing to a schema.
 
     The original exception still propagates verbatim to the caller —
     `attach_error` only re-shapes the *recording*. If the attached payload
@@ -150,11 +154,7 @@ def _serialize_error(entry: _registry.RegistryEntry, exc: BaseException) -> str:
     record.
     """
     ctx = current_job.get()
-    if (
-        ctx is not None
-        and ctx.error_buffer is not _UNSET
-        and entry.error._kind != "passthrough"
-    ):
+    if ctx is not None and ctx.error_buffer is not _UNSET:
         try:
             return json.dumps(entry.error.serialize(ctx.error_buffer))
         except Exception:

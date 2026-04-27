@@ -164,3 +164,29 @@ async def test_attach_error_works_through_worker_loop(default_recorder):
     job = default_recorder.get(h.job_id)
     assert isinstance(job.error, BrokerError)
     assert job.error.code == "W"
+
+
+# --- attach_error in passthrough mode (no error=Model) ---------------------
+
+
+def test_attach_error_in_passthrough_mode_populates_error_slot(default_recorder):
+    """`attach_error()` writes to `error_json` even when the decorator was
+    NOT registered with `error=Model`. Passthrough mode accepts any
+    JSON-shaped payload via `_to_native` — there is no reason to silently
+    drop it just because no model was declared.
+    """
+
+    @recorder(kind="t.err.passthrough")
+    def fn(req):
+        attach_error({"code": "E_RATE", "retry_after": 30, "detail": "rate limited"})
+        raise RuntimeError("rate-limited")
+
+    with pytest.raises(RuntimeError):
+        fn({"x": 1})
+
+    rows = default_recorder.last(1, kind="t.err.passthrough")
+    job = rows[0]
+    assert job.status == "failed"
+    # Passthrough rehydrates as a plain dict.
+    assert job.error == {"code": "E_RATE", "retry_after": 30, "detail": "rate limited"}
+
