@@ -34,6 +34,28 @@ def _is_dataclass_type(model: type) -> bool:
     return isinstance(model, type) and dataclasses.is_dataclass(model)
 
 
+def _to_native(value: Any) -> Any:
+    """Render a value into a JSON-native form when the slot has no model.
+
+    Without this, returning a dataclass or Pydantic instance from a
+    `@recorder` function with no `response=Model` declared would crash
+    `json.dumps` and mark the (otherwise-successful) row failed —
+    violating the audit invariant. With it, the natural-form return is
+    recorded as its dump'd dict and the row stays `completed`.
+
+    Detection is duck-typed (matches `_is_pydantic_model`'s precedent —
+    we don't import pydantic). Containers of typed instances are not
+    walked: a `list[Model]` return still requires the user to wrap in a
+    response model with a typed list field. Top-level typed instances
+    cover the realistic case.
+    """
+    if hasattr(value, "model_dump") and callable(value.model_dump):
+        return value.model_dump(mode="json")
+    if dataclasses.is_dataclass(value) and not isinstance(value, type):
+        return dataclasses.asdict(value)
+    return value
+
+
 class Adapter:
     """Serialize values *to* JSON-compatible primitives, deserialize back.
 
@@ -66,7 +88,7 @@ class Adapter:
         if value is None:
             return None
         if self._kind == "passthrough":
-            return value
+            return _to_native(value)
         if self._kind == "pydantic":
             try:
                 if isinstance(value, self.model):  # type: ignore[arg-type]

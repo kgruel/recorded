@@ -141,7 +141,58 @@ def test_unrecordable_response_marks_row_failed_and_reraises(default_recorder):
         "SELECT status, error_json FROM jobs WHERE kind=?", ("t.unrecordable",)
     ).fetchone()
     assert row[0] == "failed"
-    assert "recorder failed to serialize response" in row[1]
+
+
+# --- audit invariant: typed-instance returns without `response=Model` ------
+#
+# DESIGN.md's audit invariant says the raw response is always recorded.
+# Before the passthrough adapter learned `_to_native`, returning a
+# dataclass / pydantic instance without declaring `response=Model`
+# crashed `json.dumps` and marked the (successful) row failed —
+# violating the invariant. These tests pin the fix.
+
+
+def test_dataclass_response_records_as_dict_without_response_model(default_recorder):
+    """A bare dataclass return is recorded; the row stays `completed`."""
+
+    @dataclass
+    class Reply:
+        order_id: str
+        total: float
+
+    @recorder(kind="t.audit.dc")
+    def fn():
+        return Reply(order_id="o1", total=12.5)
+
+    fn()
+
+    row = default_recorder._connection().execute(
+        "SELECT status, response_json FROM jobs WHERE kind=?", ("t.audit.dc",)
+    ).fetchone()
+    assert row[0] == "completed"
+    assert json.loads(row[1]) == {"order_id": "o1", "total": 12.5}
+
+
+def test_pydantic_response_records_as_dict_without_response_model(default_recorder):
+    """Symmetric to the dataclass case — duck-typed via `model_dump`."""
+    pydantic = pytest.importorskip("pydantic")
+    from pydantic import BaseModel
+
+    class Reply(BaseModel):
+        order_id: str
+        total: float
+
+    @recorder(kind="t.audit.pyd")
+    def fn():
+        return Reply(order_id="o2", total=99.0)
+
+    fn()
+
+    row = default_recorder._connection().execute(
+        "SELECT status, response_json FROM jobs WHERE kind=?", ("t.audit.pyd",)
+    ).fetchone()
+    assert row[0] == "completed"
+    assert json.loads(row[1]) == {"order_id": "o2", "total": 99.0}
 
 
 # --- failure path writes terminal ------------------------------------------

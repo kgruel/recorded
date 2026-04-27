@@ -65,6 +65,43 @@ def test_passthrough_adapter_stores_dicts_verbatim():
     assert a.deserialize(None) is None
 
 
+def test_passthrough_adapter_dumps_dataclass_instance_to_native():
+    """Passthrough auto-renders dataclass instances to JSON-native dicts.
+
+    Without this, returning a dataclass from a `@recorder` function
+    without declaring `response=Model` would crash `json.dumps` in
+    `_write_completion` and mark the (successful!) row failed —
+    violating DESIGN.md's audit invariant.
+    """
+    a = Adapter()
+    src = _OrderView(customer_id=1, total_cents=200, note="x")
+    assert a.serialize(src) == {"customer_id": 1, "total_cents": 200, "note": "x"}
+
+
+@pytest.mark.skipif(not HAS_PYDANTIC, reason="pydantic not installed")
+def test_passthrough_adapter_dumps_pydantic_instance_to_native():
+    """Symmetric to the dataclass case — duck-typed via `model_dump`."""
+    from pydantic import BaseModel
+
+    class M(BaseModel):
+        x: int
+        y: str
+
+    a = Adapter()
+    assert a.serialize(M(x=1, y="hi")) == {"x": 1, "y": "hi"}
+
+
+def test_passthrough_adapter_passes_native_values_unchanged():
+    """Non-typed-instance values still pass through unchanged.
+
+    The auto-detect only triggers on dataclass / pydantic instances; lists,
+    dicts, and primitives remain identity-mapped.
+    """
+    a = Adapter()
+    for v in ({"k": "v"}, [1, 2, 3], "string", 42, 3.14, True, None):
+        assert a.serialize(v) == v
+
+
 def test_unsupported_model_type_raises():
     from recorded._errors import ConfigurationError
 
