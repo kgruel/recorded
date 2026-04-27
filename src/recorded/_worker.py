@@ -26,17 +26,15 @@ from typing import TYPE_CHECKING
 
 from . import _registry, _storage
 from ._context import JobContext, current_job
+from ._lifecycle import make_error_json
 
 if TYPE_CHECKING:
     from ._recorder import Recorder
 
 
 # Error payload for tasks aborted by `Recorder.shutdown()`.
-_CANCEL_ERROR_JSON = json.dumps(
-    {
-        "type": "CancelledError",
-        "message": "worker shutdown cancelled in-flight job",
-    }
+_CANCEL_ERROR_JSON = make_error_json(
+    "CancelledError", "worker shutdown cancelled in-flight job"
 )
 
 
@@ -137,8 +135,7 @@ class Worker:
 
     async def _execute(self, row: tuple) -> None:
         """Run the wrapped function for one claimed row."""
-        # Local import: avoids a top-level circular with `_decorator`.
-        from ._decorator import (
+        from ._lifecycle import (
             _serialize_error,
             _serialize_recording_failure,
             _write_completion,
@@ -163,15 +160,11 @@ class Worker:
             # No registered function — happens if a worker process didn't
             # import the module that defined this kind. Mark failed and
             # continue.
-            err = json.dumps(
-                {
-                    "type": "UnknownKind",
-                    "message": (
-                        f"No registered function for kind {kind!r}. "
-                        "Ensure the module defining this kind is imported "
-                        "in the worker process."
-                    ),
-                }
+            err = make_error_json(
+                "UnknownKind",
+                f"No registered function for kind {kind!r}. "
+                "Ensure the module defining this kind is imported "
+                "in the worker process.",
             )
             await asyncio.to_thread(
                 self.recorder._mark_failed, job_id, _storage.now_iso(), err

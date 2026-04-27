@@ -20,14 +20,12 @@ import asyncio
 import concurrent.futures
 import functools
 import inspect
-import json
 import sqlite3
-from dataclasses import is_dataclass
 from typing import Any, Callable
 
 from . import _registry, _storage
 from ._adapter import Adapter
-from ._context import _UNSET, JobContext, current_job
+from ._context import JobContext, current_job
 from ._errors import (
     ConfigurationError,
     IdempotencyRaceError,
@@ -35,6 +33,17 @@ from ._errors import (
     JoinTimeoutError,
     SerializationError,
     SyncInLoopError,
+)
+from ._lifecycle import (
+    _build_data_json,
+    _capture_request,
+    _project_response,
+    _serialize_error,
+    _serialize_recording_failure,
+    _serialize_request,
+    _validate_call_args,
+    _write_completion,
+    make_error_json,
 )
 from ._recorder import (
     NOTIFY_POLL_INTERVAL_S,
@@ -337,199 +346,6 @@ def _attach_call_modes(
         return JobHandle(job_id, recorder_inst, entry.kind)
 
     wrapper.submit = _submit  # type: ignore[attr-defined]
-
-
-# ---------------------------------------------------------------------------
-# Validation, capture, serialization
-# ---------------------------------------------------------------------------
-
-
-def _validate_call_args(
-    entry: _registry.RegistryEntry,
-    key: str | None,
-    args: tuple[Any, ...] = (),
-    kwargs: dict[str, Any] | None = None,
-) -> None:
-    """Call-time validation of decorator + call-shape combinations.
-
-    Two checks, both refuse-to-compile rather than silently mis-record:
-
-    1. `key=` against an auto-derived kind. The default kind comes from
-       `f"{module}.{qualname}"` and silently changes when the function
-       is renamed or moved — exactly the failure mode idempotency was
-       meant to prevent.
-
-    2. `request=Model` against a multi-argument call shape. The capture
-       envelope for multi-arg / kwarg calls is `{args, kwargs}` — that
-       shape can't be validated through a typed request model. Mirrors
-       the `key=` + auto-kind precedent: misuse caught at call time, not
-       silently mis-recorded.
-    """
-    if key is not None and entry.auto_kind:
-        raise ConfigurationError(
-            f"{entry.kind} uses an auto-derived kind (\"{entry.kind}\"). "
-            "Idempotency keys require an explicit kind to remain stable across "
-            "renames. Add: @recorder(kind=\"...\")"
-        )
-    if entry.request.model is not None:
-        kw = kwargs or {}
-        if len(args) != 1 or kw:
-            raise ConfigurationError(
-                f"{entry.kind}: request=Model requires single-positional-arg "
-                f"call shape; got args={len(args)}, kwargs={list(kw)}. "
-                "Either drop request=Model or simplify the call shape."
-            )
-
-
-def _capture_request(args: tuple[Any, ...], kwargs: dict[str, Any]) -> Any:
-    """Single positional arg → that arg. Otherwise → {args, kwargs} envelope."""
-    if len(args) == 1 and not kwargs:
-        return args[0]
-    return {"args": list(args), "kwargs": kwargs}
-
-
-def _serialize_request(entry: _registry.RegistryEntry, captured: Any) -> str | None:
-    if captured is None:
-        return None
-    serialized = entry.request.serialize(captured)
-    return json.dumps(serialized)
-
-
-def _serialize_error(entry: _registry.RegistryEntry, exc: BaseException) -> str:
-    """Compose the JSON payload written to `error_json`.
-
-    Default shape: `{type: <ExcClass>, message: <str(exc)>}` derived from
-    the live exception. If the wrapped function called `attach_error(...)`
-    on the current `JobContext` AND the decorator was registered with an
-    `error=Model`, the attached payload is validated through that adapter
-    and used instead — this is the `error=Model` wiring promised by the
-    decorator parameter.
-
-    The original exception still propagates verbatim to the caller —
-    `attach_error` only re-shapes the *recording*. If the attached payload
-    fails validation through the adapter we fall back to the default
-    `{type, message}` so a serialization bug never silently drops the
-    record.
-    """
-    ctx = current_job.get()
-    if (
-        ctx is not None
-        and ctx.error_buffer is not _UNSET
-        and entry.error._kind != "passthrough"
-    ):
-        try:
-            return json.dumps(entry.error.serialize(ctx.error_buffer))
-        except Exception:
-            # Fall through to {type, message} of the *original* exc rather
-            # than masking the underlying failure. Caller still sees `exc`.
-            pass
-    payload = {"type": type(exc).__name__, "message": str(exc)}
-    return json.dumps(payload)
-
-
-def _serialize_recording_failure(exc: BaseException) -> str:
-    """Error JSON for the case where the wrapped function succeeded but
-    the recorder couldn't serialize its result."""
-    payload = {
-        "type": type(exc).__name__,
-        "message": f"recorder failed to serialize response: {exc}",
-    }
-    return json.dumps(payload)
-
-
-def _write_completion(
-    recorder_inst: Recorder,
-    entry: _registry.RegistryEntry,
-    job_id: str,
-    result: Any,
-    buffer: dict[str, Any],
-) -> None:
-    response_json = (
-        None
-        if result is None
-        else json.dumps(entry.response.serialize(result))
-    )
-    data_json = _build_data_json(entry, result, buffer)
-    recorder_inst._mark_completed(job_id, _storage.now_iso(), response_json, data_json)
-
-
-def _build_data_json(
-    entry: _registry.RegistryEntry, response: Any, buffer: dict[str, Any]
-) -> str | None:
-    """Compose `data_json` from optional projection + attach buffer.
-
-    Conflict rule (DESIGN.md): the projection populates initial keys;
-    attaches merge in last-write-wins.
-
-    Projection-from-response is best-effort. The supported source shapes
-    (driven by `entry.data._kind`):
-
-    - dataclass-typed slot, dict response: validate by construction, dump.
-    - dataclass-typed slot, instance of `data` model: `dataclasses.asdict`.
-    - dataclass-typed slot, *some other* dataclass instance: dump it,
-      filter to `data` model's declared field names.
-    - pydantic-typed slot, dict response: `model_validate(...).model_dump(mode="json")`.
-    - pydantic-typed slot, instance of `data` model: `model_dump(mode="json")`.
-    - pydantic-typed slot, *some other* pydantic instance: `model_dump(mode="json")`,
-      filter to `data` model's declared field names.
-
-    Anything else falls through with no projection, leaving only the
-    attach buffer (which may be empty). The full response is still in
-    `response_json`; data is the queryable projection.
-    """
-    projected: dict[str, Any] = {}
-    model = entry.data.model
-    if model is not None:
-        try:
-            projected = _project_response(entry.data._kind, model, response)
-        except Exception:
-            # Projection is opportunistic — a partial response is still recorded
-            # via response_json; we just skip the projected slice.
-            projected = {}
-
-    merged = {**projected, **buffer}
-    if not merged:
-        return None
-    return json.dumps(merged)
-
-
-def _project_response(kind: str, model: type, response: Any) -> dict[str, Any]:
-    """Generalized response → dict projection driven by adapter `_kind`.
-
-    Returns an empty dict for unprojectable shapes; raises only for hard
-    bugs (the caller catches and falls back to `{}`).
-    """
-    if kind == "dataclass":
-        import dataclasses
-
-        if is_dataclass(model):
-            names = {f.name for f in dataclasses.fields(model)}
-            if isinstance(response, model):
-                return dataclasses.asdict(response)
-            if isinstance(response, dict):
-                filtered = {k: v for k, v in response.items() if k in names}
-                return dataclasses.asdict(model(**filtered))
-            if dataclasses.is_dataclass(response) and not isinstance(response, type):
-                dumped = dataclasses.asdict(response)
-                return {k: v for k, v in dumped.items() if k in names}
-        return {}
-
-    if kind == "pydantic":
-        # `_kind == "pydantic"` is set by Adapter only when the model
-        # implements `model_validate` + `model_dump`.
-        names = set(getattr(model, "model_fields", {}).keys())
-        if isinstance(response, model):
-            return response.model_dump(mode="json")
-        if isinstance(response, dict):
-            return model.model_validate(response).model_dump(mode="json")
-        if hasattr(response, "model_dump"):
-            dumped = response.model_dump(mode="json")
-            if names:
-                return {k: v for k, v in dumped.items() if k in names}
-            return dumped
-        return {}
-
-    return {}
 
 
 # ---------------------------------------------------------------------------
