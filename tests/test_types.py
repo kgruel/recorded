@@ -46,11 +46,13 @@ def test_dataclass_roundtrip_via_data_slot():
 
 
 def test_dataclass_accepts_dict_input_and_validates_by_construction():
+    from recorded._errors import SerializationError
+
     a = Adapter(_OrderView)
     raw = a.serialize({"customer_id": 7, "total_cents": 100, "note": None})
     assert raw == {"customer_id": 7, "total_cents": 100, "note": None}
     # missing required field raises at serialize time (dict path).
-    with pytest.raises(TypeError):
+    with pytest.raises(SerializationError):
         a.serialize({"customer_id": 1})  # missing total_cents
 
 
@@ -64,10 +66,12 @@ def test_passthrough_adapter_stores_dicts_verbatim():
 
 
 def test_unsupported_model_type_raises():
+    from recorded._errors import ConfigurationError
+
     class NotAModel:
         pass
 
-    with pytest.raises(TypeError):
+    with pytest.raises(ConfigurationError):
         Adapter(NotAModel)
 
 

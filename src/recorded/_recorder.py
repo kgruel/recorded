@@ -13,6 +13,7 @@ import threading
 from typing import Any
 
 from . import _registry, _storage
+from ._errors import RecorderClosedError
 from ._types import Job
 
 
@@ -40,7 +41,9 @@ class Recorder:
     def _connection(self) -> sqlite3.Connection:
         with self._lock:
             if self._closed:
-                raise RuntimeError("Recorder is shut down")
+                raise RecorderClosedError(
+                    f"Recorder({self.path!r}) has been shut down."
+                )
             if self._conn is None:
                 self._conn = _storage.open_connection(self.path)
                 _storage.ensure_schema(self._conn)

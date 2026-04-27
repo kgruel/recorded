@@ -19,6 +19,8 @@ from __future__ import annotations
 import dataclasses
 from typing import Any
 
+from ._errors import ConfigurationError, SerializationError
+
 
 def _is_pydantic_model(model: type) -> bool:
     return (
@@ -55,7 +57,7 @@ class Adapter:
         elif _is_dataclass_type(model):
             self._kind = "dataclass"
         else:
-            raise TypeError(
+            raise ConfigurationError(
                 f"Unsupported model type: {model!r}. "
                 "Expected a dataclass, a Pydantic v2 BaseModel, or None."
             )
@@ -66,18 +68,35 @@ class Adapter:
         if self._kind == "passthrough":
             return value
         if self._kind == "pydantic":
-            if isinstance(value, self.model):  # type: ignore[arg-type]
-                return value.model_dump(mode="json")
-            # validate-then-dump: ensures stored shape is canonical
-            return self.model.model_validate(value).model_dump(mode="json")  # type: ignore[union-attr]
+            try:
+                if isinstance(value, self.model):  # type: ignore[arg-type]
+                    return value.model_dump(mode="json")
+                # validate-then-dump: ensures stored shape is canonical
+                return self.model.model_validate(value).model_dump(mode="json")  # type: ignore[union-attr]
+            except Exception as exc:
+                raise SerializationError(
+                    f"Cannot serialize {type(value).__name__} into "
+                    f"pydantic slot {self.model.__name__}: {exc}",  # type: ignore[union-attr]
+                    model=self.model,
+                    value=value,
+                ) from exc
         # dataclass
         if isinstance(value, self.model):  # type: ignore[arg-type]
             return dataclasses.asdict(value)
         if isinstance(value, dict):
-            return dataclasses.asdict(self.model(**value))  # type: ignore[misc]
-        raise TypeError(
+            try:
+                return dataclasses.asdict(self.model(**value))  # type: ignore[misc]
+            except TypeError as exc:
+                raise SerializationError(
+                    f"Cannot construct {self.model.__name__} from dict: {exc}",  # type: ignore[union-attr]
+                    model=self.model,
+                    value=value,
+                ) from exc
+        raise SerializationError(
             f"Cannot serialize {type(value).__name__} into "
-            f"dataclass slot {self.model.__name__}"  # type: ignore[union-attr]
+            f"dataclass slot {self.model.__name__}",  # type: ignore[union-attr]
+            model=self.model,
+            value=value,
         )
 
     def deserialize(self, raw: Any) -> Any:

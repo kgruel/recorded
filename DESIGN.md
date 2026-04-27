@@ -129,7 +129,7 @@ Multiple `failed` rows per `(kind, key)` are allowed and preserved as history. A
 
 The default `kind` is `f"{fn.__module__}.{fn.__qualname__}"`. If a function is renamed or moved, the auto-derived kind silently changes — and the idempotency keyspace silently changes with it. A retry after a refactor would re-execute work that should have been deduplicated. This is exactly the failure mode idempotency was supposed to prevent.
 
-To prevent the silent break, decoration **raises at definition time** if `key=` would be combined with an auto-derived kind:
+To prevent the silent break, the library **raises at call time** the first time `key=` is passed against a function whose decorator has an auto-derived kind. (Decoration time can't know whether the caller will use `key=`; refusing every auto-kind decoration would defeat the bare-decorator convenience.) The result is the same — the user sees a loud error before any silent re-execution:
 
 ```python
 @recorder  # auto-kind
@@ -165,6 +165,32 @@ If you need crash-safe intermediate durability (rare), `attach(key, value, flush
 Implemented via `contextvars`, which propagate naturally through `await` boundaries and across `asyncio.gather` (each task gets its own context). If `attach()` is called outside a recorded function, it raises. Tasks/threads spawned by the wrapped function won't see the current job unless they explicitly propagate the context — document the limitation.
 
 Conflict rule: if both `data=Projection` and `attach()` are used, the projection populates initial keys; attaches merge in last-write-wins. Caller owns avoiding key collisions.
+
+## Exception hierarchy
+
+All library-raised exceptions inherit from `RecordedError`. Two main subtrees plus standalones grouped where the grouping is real:
+
+```
+RecordedError
+├── UsageError                       # programming/configuration mistakes
+│   ├── ConfigurationError           # bad decorator setup (key+auto-kind, bad model type)
+│   ├── AttachOutsideJobError        # attach() called outside a recorded function
+│   ├── SyncInLoopError              # .sync() called from inside a running event loop
+│   ├── RecorderClosedError          # operation on a shut-down Recorder
+│   └── SerializationError           # value doesn't fit the registered slot model
+└── IdempotencyError                 # idempotency-keyed call outcomes
+    ├── JoinedSiblingFailedError     # joined sibling terminated as failed
+    ├── JoinTimeoutError             # also inherits stdlib TimeoutError
+    └── IdempotencyRaceError         # rare post-INSERT lookup-race failure
+```
+
+Rules:
+
+- **The wrapped function's own exceptions propagate verbatim.** The library records the failure in `error_json` and re-raises the original. We do not wrap user-domain errors in our hierarchy — if the broker raised `BrokerError`, the caller catches `BrokerError`.
+- **Catch at any level of specificity.** `except RecordedError:` catches every library-raised error; `except UsageError:` catches "you used the API wrong"; `except IdempotencyError:` catches all idempotency outcomes; specific classes catch one situation.
+- **`JoinTimeoutError` multi-inherits `TimeoutError`** so `except TimeoutError:` callers still catch it.
+- **Concrete classes carry structured fields** (e.g. `JoinedSiblingFailedError.sibling_job_id`, `SerializationError.value`) so callers can act programmatically, not just log a string.
+- **`NotImplementedError` (stdlib) is used for the phase-2 `.submit` stub** — semantically the right shape, replaced when the worker lands.
 
 ## Schema
 

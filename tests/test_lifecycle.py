@@ -123,15 +123,18 @@ def test_bare_call_returns_wrapped_functions_natural_value_sync(default_recorder
 
 def test_unrecordable_response_marks_row_failed_and_reraises(default_recorder):
     """If the recorder can't serialize the response, mark the row failed
-    rather than leaking it as `running`. The caller sees the TypeError so
-    they know their function returned something unrecordable."""
+    rather than leaking it as `running`. The caller sees a SerializationError
+    (chained from the underlying TypeError) so they know the recorder, not
+    the function, was the problem."""
+    from recorded._errors import SerializationError
+
     sentinel = object()
 
     @recorder(kind="t.unrecordable")
     def returner():
         return sentinel
 
-    with pytest.raises(TypeError):
+    with pytest.raises(SerializationError):
         returner()
 
     row = default_recorder._connection().execute(

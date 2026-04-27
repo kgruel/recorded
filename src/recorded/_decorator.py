@@ -28,7 +28,14 @@ from typing import Any, Callable
 from . import _registry, _storage
 from ._adapter import Adapter
 from ._context import JobContext, current_job
-from ._errors import ConfigurationError, SyncInLoopError
+from ._errors import (
+    ConfigurationError,
+    IdempotencyRaceError,
+    JoinedSiblingFailedError,
+    JoinTimeoutError,
+    SerializationError,
+    SyncInLoopError,
+)
 from ._recorder import Recorder, get_default
 
 # Idempotency-poll cadence (seconds) when waiting for a racing caller's
@@ -172,7 +179,12 @@ def _build_async_wrapper(
                     _storage.now_iso(),
                     _serialize_recording_failure(exc),
                 )
-                raise
+                raise SerializationError(
+                    f"recorder failed to serialize response from "
+                    f"{fn.__qualname__}: {exc}",
+                    slot="response",
+                    value=result,
+                ) from exc
             return result
         finally:
             current_job.reset(token)
@@ -230,7 +242,12 @@ def _build_sync_wrapper(
                 recorder_inst._mark_failed(
                     job_id, _storage.now_iso(), _serialize_recording_failure(exc)
                 )
-                raise
+                raise SerializationError(
+                    f"recorder failed to serialize response from "
+                    f"{fn.__qualname__}: {exc}",
+                    slot="response",
+                    value=result,
+                ) from exc
             return result
         finally:
             current_job.reset(token)
@@ -440,7 +457,7 @@ def _try_join_existing(
         job = recorder_inst.get(job_id)
         return job.response if job is not None else None
     # pending or running: wait for terminal, then return its outcome.
-    return _wait_for_terminal(recorder_inst, job_id, entry)
+    return _wait_for_terminal(recorder_inst, job_id, entry, key)
 
 
 def _wait_for_join(
@@ -467,18 +484,19 @@ def _wait_for_join(
             if failed_id is not None:
                 return recorder_inst.get(failed_id)
         # Fallback: re-raise IntegrityError indirectly via empty join.
-        raise RuntimeError(
-            "Lost idempotency-collision lookup race; retry the call."
-        )
+        raise IdempotencyRaceError(kind=entry.kind, key=key)
     job_id, status = found
     if status == _storage.STATUS_COMPLETED:
         job = recorder_inst.get(job_id)
         return job.response if job is not None else None
-    return _wait_for_terminal(recorder_inst, job_id, entry)
+    return _wait_for_terminal(recorder_inst, job_id, entry, key)
 
 
 def _wait_for_terminal(
-    recorder_inst: Recorder, job_id: str, entry: _registry.RegistryEntry
+    recorder_inst: Recorder,
+    job_id: str,
+    entry: _registry.RegistryEntry,
+    key: str | None,
 ) -> Any:
     """Sync-poll a row until it reaches terminal state, then return.
 
@@ -492,9 +510,11 @@ def _wait_for_terminal(
         if status in _storage.TERMINAL_STATUSES:
             break
         if time.monotonic() > deadline:
-            raise TimeoutError(
-                f"Timed out waiting for sibling job {job_id} ({entry.kind}) "
-                f"to reach terminal status."
+            raise JoinTimeoutError(
+                kind=entry.kind,
+                key=key,
+                sibling_job_id=job_id,
+                timeout_s=_POLL_TIMEOUT_S,
             )
         time.sleep(_POLL_INTERVAL_S)
 
@@ -503,9 +523,10 @@ def _wait_for_terminal(
         return job.response if job is not None else None
     # status == failed
     job = recorder_inst.get(job_id)
-    msg = "<unknown>"
-    if job is not None and isinstance(job.error, dict):
-        msg = job.error.get("message", msg)
-    raise RuntimeError(
-        f"Joined sibling job for ({entry.kind}, key) terminated as failed: {msg}"
+    sibling_error = job.error if (job is not None and isinstance(job.error, dict)) else None
+    raise JoinedSiblingFailedError(
+        kind=entry.kind,
+        key=key or "",
+        sibling_job_id=job_id,
+        sibling_error=sibling_error,
     )

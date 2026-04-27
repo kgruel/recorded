@@ -133,9 +133,11 @@ def test_recorded_last_respects_limit(default_recorder):
 
 
 def test_recorder_shutdown_is_idempotent(db_path):
+    from recorded._errors import RecorderClosedError
+
     r = recorded.Recorder(path=db_path)
     r._connection()
     r.shutdown()
     r.shutdown()  # second call must not raise
-    with pytest.raises(RuntimeError):
+    with pytest.raises(RecorderClosedError):
         r._connection()

@@ -10,15 +10,17 @@ from recorded import recorder
 from recorded._errors import ConfigurationError
 
 
-# --- decoration-time validation -------------------------------------------
+# --- call-time validation of key= against auto-derived kind ---------------
 
 
-def test_key_with_auto_kind_raises_at_decoration(default_recorder):
+def test_key_with_auto_kind_raises_when_key_is_used(default_recorder):
     """Named test: a function decorated with `@recorder` (auto-derived kind)
     refuses to accept `key=` at the call site.
 
-    The error message names the auto-derived kind and points the user at
-    the explicit-kind fix.
+    Validation happens at call time, not decoration time — we can't know
+    at decoration whether the caller will use `key=` (and refusing every
+    auto-kind decoration would defeat the convenience). The error message
+    names the auto-derived kind and points the user at the explicit-kind fix.
     """
 
     @recorder
