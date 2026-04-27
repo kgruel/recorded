@@ -17,6 +17,7 @@ Phase 2 Stream A additions over phase 1:
 
 from __future__ import annotations
 
+import atexit
 import concurrent.futures
 import fnmatch
 import json
@@ -54,10 +55,12 @@ class Recorder:
         *,
         reaper_threshold_s: float = DEFAULT_REAPER_THRESHOLD_S,
         worker_poll_interval_s: float = 0.2,
+        join_timeout_s: float = DEFAULT_JOIN_TIMEOUT_S,
     ) -> None:
         self.path = path
         self.reaper_threshold_s = reaper_threshold_s
         self.worker_poll_interval_s = worker_poll_interval_s
+        self.join_timeout_s = join_timeout_s
 
         self._lock = threading.Lock()
         # See PROGRESS_INTEGRATION §3.1: read paths must hold this through
@@ -155,6 +158,19 @@ class Recorder:
 
     def __exit__(self, exc_type, exc, tb) -> None:
         self.shutdown()
+
+    async def __aenter__(self) -> "Recorder":
+        # Bootstrap the connection on the threadpool so the loop stays
+        # responsive during the first-touch reaper sweep.
+        import asyncio
+
+        await asyncio.to_thread(self._connection)
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb) -> None:
+        import asyncio
+
+        await asyncio.to_thread(self.shutdown)
 
     # ----- read API -----
 
@@ -310,6 +326,24 @@ class Recorder:
         row = self._fetchone("SELECT status FROM jobs WHERE id = ?", (job_id,))
         return None if row is None else row[0]
 
+    def _row_error_dict(self, job_id: str) -> dict | None:
+        """Raw `error_json` decoded as a dict (no model rehydration).
+
+        Used by `JoinedSiblingFailedError.sibling_error`, which must surface
+        the unconverted recorded shape regardless of whether `error=Model`
+        rehydrates `Job.error` into an instance on the read path.
+        """
+        row = self._fetchone(
+            "SELECT error_json FROM jobs WHERE id = ?", (job_id,)
+        )
+        if row is None or row[0] is None:
+            return None
+        try:
+            decoded = json.loads(row[0])
+        except Exception:
+            return None
+        return decoded if isinstance(decoded, dict) else None
+
     def _lookup_active_by_kind_key(
         self, kind: str, key: str
     ) -> tuple[str, str] | None:
@@ -457,6 +491,7 @@ def _normalize_iso(value: str | datetime) -> str:
 
 _default: Recorder | None = None
 _default_lock = threading.Lock()
+_atexit_registered_for: set[int] = set()
 
 
 def get_default() -> Recorder:
@@ -468,11 +503,69 @@ def get_default() -> Recorder:
 
 
 def _set_default(r: Recorder | None) -> None:
+    """Test-only swap of the module-level default Recorder.
+
+    The previous default (if any and not the same instance) is shut down.
+    Direct construction via `Recorder(...)` does NOT register `atexit` —
+    only the *configured* default does (see `configure()`); test fixtures
+    that swap via this hook are responsible for their own teardown.
+    """
     global _default
     with _default_lock:
         if _default is not None and _default is not r:
             _default.shutdown()
         _default = r
+
+
+def configure(
+    path: str | None = None,
+    *,
+    reaper_threshold_s: float | None = None,
+    worker_poll_interval_s: float | None = None,
+    join_timeout_s: float | None = None,
+) -> Recorder:
+    """Configure the module-level default `Recorder`. Configure-once.
+
+    The first call constructs a `Recorder` with the given keywords (only
+    those explicitly passed are forwarded; `None` values fall back to
+    `Recorder.__init__` defaults), installs it as the module default, and
+    registers `atexit.register(recorder.shutdown)` so the connection
+    closes cleanly when the interpreter exits.
+
+    Subsequent calls are no-ops: they return the existing default
+    unchanged. Tests and explicit-instance code paths bypass this by
+    constructing `Recorder(...)` directly.
+
+    Returns the default `Recorder`. Composes with `async with`:
+
+        @asynccontextmanager
+        async def lifespan(app: FastAPI):
+            async with recorded.configure(path="...") as recorder:
+                yield
+    """
+    global _default
+    with _default_lock:
+        if _default is not None:
+            return _default
+        kwargs: dict[str, Any] = {}
+        if path is not None:
+            kwargs["path"] = path
+        if reaper_threshold_s is not None:
+            kwargs["reaper_threshold_s"] = reaper_threshold_s
+        if worker_poll_interval_s is not None:
+            kwargs["worker_poll_interval_s"] = worker_poll_interval_s
+        if join_timeout_s is not None:
+            kwargs["join_timeout_s"] = join_timeout_s
+        r = Recorder(**kwargs)
+        _default = r
+        # Only the *configured* default registers atexit — direct
+        # `Recorder(...)` construction is too noisy (tests build dozens).
+        # Guard against double-registration if the same Recorder somehow
+        # reaches this branch twice (it shouldn't under configure-once).
+        if id(r) not in _atexit_registered_for:
+            _atexit_registered_for.add(id(r))
+            atexit.register(r.shutdown)
+        return r
 
 
 # ----- row -> Job rehydration -----
@@ -508,5 +601,17 @@ def _row_to_job(row: tuple[Any, ...]) -> Job:
         request=entry.request.deserialize(_loads(request_json)),
         response=entry.response.deserialize(_loads(response_json)),
         data=entry.data.deserialize(_loads(data_json)),
-        error=entry.error.deserialize(_loads(error_json)),
+        # Errors may have been recorded under the default `{type, message}`
+        # fallback shape even when `error=Model` is registered (e.g. the
+        # wrapped function never called `attach_error()`, or its payload
+        # failed validation). Rehydration through the model would crash;
+        # fall back to the raw dict.
+        error=_safe_deserialize(entry.error, _loads(error_json)),
     )
+
+
+def _safe_deserialize(adapter: Any, raw: Any) -> Any:
+    try:
+        return adapter.deserialize(raw)
+    except Exception:
+        return raw

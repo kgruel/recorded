@@ -21,6 +21,7 @@ dev = [
     "pydantic>=2",
     "pytest-httpserver>=1",
     "httpx>=0.27",
+    "fastapi>=0.110",
 ]
 
 [tool.hatch.build.targets.wheel]

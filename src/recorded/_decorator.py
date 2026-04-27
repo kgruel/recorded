@@ -27,7 +27,7 @@ from typing import Any, Callable
 
 from . import _registry, _storage
 from ._adapter import Adapter
-from ._context import JobContext, current_job
+from ._context import _UNSET, JobContext, current_job
 from ._errors import (
     ConfigurationError,
     IdempotencyRaceError,
@@ -37,7 +37,6 @@ from ._errors import (
     SyncInLoopError,
 )
 from ._recorder import (
-    DEFAULT_JOIN_TIMEOUT_S,
     NOTIFY_POLL_INTERVAL_S,
     Recorder,
     get_default,
@@ -109,7 +108,7 @@ def _build_async_wrapper(
         retry_failed: bool = True,
         **kwargs: Any,
     ) -> Any:
-        _validate_call_args(entry, key)
+        _validate_call_args(entry, key, args, kwargs)
 
         recorder_inst = get_default()
 
@@ -201,7 +200,7 @@ def _build_sync_wrapper(
         retry_failed: bool = True,
         **kwargs: Any,
     ) -> Any:
-        _validate_call_args(entry, key)
+        _validate_call_args(entry, key, args, kwargs)
 
         recorder_inst = get_default()
 
@@ -312,7 +311,7 @@ def _attach_call_modes(
     def _submit(*args: Any, key: str | None = None, retry_failed: bool = True, **kwargs: Any) -> Any:
         from ._handle import JobHandle
 
-        _validate_call_args(entry, key)
+        _validate_call_args(entry, key, args, kwargs)
         recorder_inst = get_default()
 
         if key is not None:
@@ -348,12 +347,26 @@ def _attach_call_modes(
 # ---------------------------------------------------------------------------
 
 
-def _validate_call_args(entry: _registry.RegistryEntry, key: str | None) -> None:
-    """Raise if the caller is requesting idempotency without an explicit kind.
+def _validate_call_args(
+    entry: _registry.RegistryEntry,
+    key: str | None,
+    args: tuple[Any, ...] = (),
+    kwargs: dict[str, Any] | None = None,
+) -> None:
+    """Call-time validation of decorator + call-shape combinations.
 
-    The default kind is auto-derived from `f"{module}.{qualname}"` and
-    silently changes when the function is renamed or moved — exactly the
-    failure mode idempotency was meant to prevent. We refuse to compile.
+    Two checks, both refuse-to-compile rather than silently mis-record:
+
+    1. `key=` against an auto-derived kind. The default kind comes from
+       `f"{module}.{qualname}"` and silently changes when the function
+       is renamed or moved — exactly the failure mode idempotency was
+       meant to prevent.
+
+    2. `request=Model` against a multi-argument call shape. The capture
+       envelope for multi-arg / kwarg calls is `{args, kwargs}` — that
+       shape can't be validated through a typed request model. Mirrors
+       the `key=` + auto-kind precedent: misuse caught at call time, not
+       silently mis-recorded.
     """
     if key is not None and entry.auto_kind:
         raise ConfigurationError(
@@ -361,6 +374,14 @@ def _validate_call_args(entry: _registry.RegistryEntry, key: str | None) -> None
             "Idempotency keys require an explicit kind to remain stable across "
             "renames. Add: @recorder(kind=\"...\")"
         )
+    if entry.request.model is not None:
+        kw = kwargs or {}
+        if len(args) != 1 or kw:
+            raise ConfigurationError(
+                f"{entry.kind}: request=Model requires single-positional-arg "
+                f"call shape; got args={len(args)}, kwargs={list(kw)}. "
+                "Either drop request=Model or simplify the call shape."
+            )
 
 
 def _capture_request(args: tuple[Any, ...], kwargs: dict[str, Any]) -> Any:
@@ -378,12 +399,33 @@ def _serialize_request(entry: _registry.RegistryEntry, captured: Any) -> str | N
 
 
 def _serialize_error(entry: _registry.RegistryEntry, exc: BaseException) -> str:
-    """Errors are stored as `{type, message}`.
+    """Compose the JSON payload written to `error_json`.
 
-    `error=Model` is accepted in the decorator surface but not yet honored —
-    the wrapper always emits the natural exception shape in phase 1.
-    Custom error projection can be added without breaking the row schema.
+    Default shape: `{type: <ExcClass>, message: <str(exc)>}` derived from
+    the live exception. If the wrapped function called `attach_error(...)`
+    on the current `JobContext` AND the decorator was registered with an
+    `error=Model`, the attached payload is validated through that adapter
+    and used instead — this is the `error=Model` wiring promised by the
+    decorator parameter.
+
+    The original exception still propagates verbatim to the caller —
+    `attach_error` only re-shapes the *recording*. If the attached payload
+    fails validation through the adapter we fall back to the default
+    `{type, message}` so a serialization bug never silently drops the
+    record.
     """
+    ctx = current_job.get()
+    if (
+        ctx is not None
+        and ctx.error_buffer is not _UNSET
+        and entry.error._kind != "passthrough"
+    ):
+        try:
+            return json.dumps(entry.error.serialize(ctx.error_buffer))
+        except Exception:
+            # Fall through to {type, message} of the *original* exc rather
+            # than masking the underlying failure. Caller still sees `exc`.
+            pass
     payload = {"type": type(exc).__name__, "message": str(exc)}
     return json.dumps(payload)
 
@@ -422,23 +464,27 @@ def _build_data_json(
     Conflict rule (DESIGN.md): the projection populates initial keys;
     attaches merge in last-write-wins.
 
-    Projection-from-response is best-effort: a dict response is filtered
-    to the model's declared field names for dataclasses, or fed through
-    `model_validate` for Pydantic. Anything else falls through with no
-    projection, leaving only the attach buffer (which may be empty).
+    Projection-from-response is best-effort. The supported source shapes
+    (driven by `entry.data._kind`):
+
+    - dataclass-typed slot, dict response: validate by construction, dump.
+    - dataclass-typed slot, instance of `data` model: `dataclasses.asdict`.
+    - dataclass-typed slot, *some other* dataclass instance: dump it,
+      filter to `data` model's declared field names.
+    - pydantic-typed slot, dict response: `model_validate(...).model_dump(mode="json")`.
+    - pydantic-typed slot, instance of `data` model: `model_dump(mode="json")`.
+    - pydantic-typed slot, *some other* pydantic instance: `model_dump(mode="json")`,
+      filter to `data` model's declared field names.
+
+    Anything else falls through with no projection, leaving only the
+    attach buffer (which may be empty). The full response is still in
+    `response_json`; data is the queryable projection.
     """
     projected: dict[str, Any] = {}
     model = entry.data.model
-    if model is not None and isinstance(response, dict):
+    if model is not None:
         try:
-            if entry.data._kind == "dataclass" and is_dataclass(model):
-                import dataclasses
-
-                names = {f.name for f in dataclasses.fields(model)}
-                filtered = {k: v for k, v in response.items() if k in names}
-                projected = dataclasses.asdict(model(**filtered))
-            elif entry.data._kind == "pydantic":
-                projected = model.model_validate(response).model_dump(mode="json")
+            projected = _project_response(entry.data._kind, model, response)
         except Exception:
             # Projection is opportunistic — a partial response is still recorded
             # via response_json; we just skip the projected slice.
@@ -448,6 +494,45 @@ def _build_data_json(
     if not merged:
         return None
     return json.dumps(merged)
+
+
+def _project_response(kind: str, model: type, response: Any) -> dict[str, Any]:
+    """Generalized response → dict projection driven by adapter `_kind`.
+
+    Returns an empty dict for unprojectable shapes; raises only for hard
+    bugs (the caller catches and falls back to `{}`).
+    """
+    if kind == "dataclass":
+        import dataclasses
+
+        if is_dataclass(model):
+            names = {f.name for f in dataclasses.fields(model)}
+            if isinstance(response, model):
+                return dataclasses.asdict(response)
+            if isinstance(response, dict):
+                filtered = {k: v for k, v in response.items() if k in names}
+                return dataclasses.asdict(model(**filtered))
+            if dataclasses.is_dataclass(response) and not isinstance(response, type):
+                dumped = dataclasses.asdict(response)
+                return {k: v for k, v in dumped.items() if k in names}
+        return {}
+
+    if kind == "pydantic":
+        # `_kind == "pydantic"` is set by Adapter only when the model
+        # implements `model_validate` + `model_dump`.
+        names = set(getattr(model, "model_fields", {}).keys())
+        if isinstance(response, model):
+            return response.model_dump(mode="json")
+        if isinstance(response, dict):
+            return model.model_validate(response).model_dump(mode="json")
+        if hasattr(response, "model_dump"):
+            dumped = response.model_dump(mode="json")
+            if names:
+                return {k: v for k, v in dumped.items() if k in names}
+            return dumped
+        return {}
+
+    return {}
 
 
 # ---------------------------------------------------------------------------
@@ -540,7 +625,12 @@ def _wait_for_terminal_sync(
     fut = recorder_inst._subscribe(job_id)
     try:
         status = _await_terminal_sync(
-            recorder_inst, job_id, fut, entry, key, DEFAULT_JOIN_TIMEOUT_S
+            recorder_inst,
+            job_id,
+            fut,
+            entry,
+            key,
+            recorder_inst.join_timeout_s,
         )
     finally:
         recorder_inst._unsubscribe(job_id, fut)
@@ -589,7 +679,12 @@ async def _async_wait_for_terminal(
     fut = recorder_inst._subscribe(job_id)
     try:
         status = await _await_terminal_async(
-            recorder_inst, job_id, fut, entry, key, DEFAULT_JOIN_TIMEOUT_S
+            recorder_inst,
+            job_id,
+            fut,
+            entry,
+            key,
+            recorder_inst.join_timeout_s,
         )
     finally:
         recorder_inst._unsubscribe(job_id, fut)
@@ -747,10 +842,9 @@ def _raise_for_failed_sibling(
     entry: _registry.RegistryEntry,
     key: str | None,
 ) -> None:
-    job = recorder_inst.get(job_id)
-    sibling_error = (
-        job.error if (job is not None and isinstance(job.error, dict)) else None
-    )
+    # Raw dict (not the rehydrated model) so callers see the same shape
+    # whether or not `error=Model` is registered.
+    sibling_error = recorder_inst._row_error_dict(job_id)
     raise JoinedSiblingFailedError(
         kind=entry.kind,
         key=key or "",

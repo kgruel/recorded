@@ -15,10 +15,10 @@ import sqlite3
 from datetime import datetime
 from typing import Any, Iterator
 
-from ._context import attach
+from ._context import attach, attach_error
 from ._decorator import recorder
 from ._handle import JobHandle
-from ._recorder import Recorder, get_default
+from ._recorder import Recorder, configure, get_default
 from ._types import Job
 
 
@@ -70,6 +70,8 @@ __all__ = [
     "Job",
     "JobHandle",
     "attach",
+    "attach_error",
+    "configure",
     "connection",
     "get",
     "last",

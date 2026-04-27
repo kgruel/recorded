@@ -19,7 +19,7 @@ from ._errors import (
     JoinTimeoutError,
     SyncInLoopError,
 )
-from ._recorder import DEFAULT_JOIN_TIMEOUT_S, NOTIFY_POLL_INTERVAL_S
+from ._recorder import NOTIFY_POLL_INTERVAL_S
 from ._types import Job
 
 if TYPE_CHECKING:
@@ -49,7 +49,9 @@ class JobHandle:
         return a `Job` for failure paths). Raises `JoinTimeoutError`
         (also a stdlib `TimeoutError`) if `timeout` elapses first.
         """
-        timeout_s = DEFAULT_JOIN_TIMEOUT_S if timeout is None else float(timeout)
+        timeout_s = (
+            self._recorder.join_timeout_s if timeout is None else float(timeout)
+        )
         fut = self._recorder._subscribe(self.job_id)
         try:
             status = await self._await_async(fut, timeout_s)
@@ -104,7 +106,9 @@ class JobHandle:
                 "event loop. Use `await handle.wait()` instead."
             )
 
-        timeout_s = DEFAULT_JOIN_TIMEOUT_S if timeout is None else float(timeout)
+        timeout_s = (
+            self._recorder.join_timeout_s if timeout is None else float(timeout)
+        )
         fut = self._recorder._subscribe(self.job_id)
         try:
             status = self._await_sync(fut, timeout_s)
@@ -145,9 +149,10 @@ class JobHandle:
                 "but the row could not be re-fetched."
             )
         if status == _storage.STATUS_FAILED:
-            sibling_error = (
-                job.error if isinstance(job.error, dict) else None
-            )
+            # Raw dict (not the rehydrated model) so callers programmatically
+            # branching on `sibling_error` see the same shape regardless of
+            # whether the decorator was registered with `error=Model`.
+            sibling_error = self._recorder._row_error_dict(self.job_id)
             raise JoinedSiblingFailedError(
                 kind=self._kind,
                 key=job.key or "",
