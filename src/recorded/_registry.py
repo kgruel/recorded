@@ -1,12 +1,13 @@
 """Module-level registry: `kind` -> typed-slot adapters + the wrapped function.
 
-Populated by `@recorder` at import time (in phase 1.2). The read API consults
-the registry to rehydrate stored JSON into model instances.
+Populated by `@recorder` at import time. The read API consults the registry
+to rehydrate stored JSON into model instances.
 
 Registry is intentionally process-global. If a function is registered twice
-under the same `kind`, the second registration wins (last write) — but we
-warn at debug level via `RuntimeError` only if the *adapters* differ, since
-silent re-registration during e.g. test reload is normal.
+under the same `kind`, the second registration wins (last write) silently.
+Test reloads, conditional decorators, and recompiles all routinely produce
+duplicate registrations; raising or warning here would be more noise than
+signal.
 """
 
 from __future__ import annotations

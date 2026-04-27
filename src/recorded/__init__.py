@@ -19,6 +19,18 @@ from typing import Any, Iterator
 
 from ._context import attach, attach_error
 from ._decorator import recorder
+from ._errors import (
+    ConfigurationError,
+    IdempotencyError,
+    IdempotencyRaceError,
+    JoinedSiblingFailedError,
+    JoinTimeoutError,
+    RecordedError,
+    RecorderClosedError,
+    SerializationError,
+    SyncInLoopError,
+    UsageError,
+)
 from ._handle import JobHandle
 from ._recorder import Recorder, configure, get_default
 from ._types import Job
@@ -68,6 +80,7 @@ def connection() -> sqlite3.Connection:
 
 
 __all__ = [
+    # Core API
     "Recorder",
     "Job",
     "JobHandle",
@@ -79,4 +92,16 @@ __all__ = [
     "last",
     "list",
     "recorder",
+    # Exception hierarchy — re-exported so callers can `except recorded.X:`
+    # without reaching into `recorded._errors`.
+    "RecordedError",
+    "UsageError",
+    "IdempotencyError",
+    "ConfigurationError",
+    "RecorderClosedError",
+    "SerializationError",
+    "SyncInLoopError",
+    "IdempotencyRaceError",
+    "JoinedSiblingFailedError",
+    "JoinTimeoutError",
 ]
