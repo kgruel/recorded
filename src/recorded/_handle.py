@@ -62,6 +62,11 @@ class JobHandle:
     async def _await_async(
         self, fut: concurrent.futures.Future, timeout_s: float
     ) -> str:
+        # Hoist `wrap_future` outside the loop. Each call registers a
+        # done-callback on `fut`; recreating it per iteration accumulates
+        # callbacks on the underlying concurrent.futures.Future for every
+        # cross-process polling tick.
+        async_fut = asyncio.wrap_future(fut)
         deadline = time.monotonic() + timeout_s
         while True:
             remaining = deadline - time.monotonic()
@@ -75,8 +80,7 @@ class JobHandle:
             slice_s = min(remaining, NOTIFY_POLL_INTERVAL_S)
             try:
                 return await asyncio.wait_for(
-                    asyncio.shield(asyncio.wrap_future(fut)),
-                    timeout=slice_s,
+                    asyncio.shield(async_fut), timeout=slice_s
                 )
             except asyncio.TimeoutError:
                 # Cross-process fallback — recheck row status in case the

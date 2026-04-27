@@ -449,6 +449,10 @@ async def _await_terminal_async(
 ) -> str:
     import time
 
+    # Hoist `wrap_future` outside the loop — each call registers a
+    # done-callback on `fut`, so recreating it every cross-process polling
+    # tick accumulates callbacks on the underlying concurrent.futures.Future.
+    async_fut = asyncio.wrap_future(fut)
     deadline = time.monotonic() + timeout_s
     while True:
         remaining = deadline - time.monotonic()
@@ -462,7 +466,7 @@ async def _await_terminal_async(
         slice_s = min(remaining, NOTIFY_POLL_INTERVAL_S)
         try:
             return await asyncio.wait_for(
-                asyncio.shield(asyncio.wrap_future(fut)), timeout=slice_s
+                asyncio.shield(async_fut), timeout=slice_s
             )
         except asyncio.TimeoutError:
             status = await asyncio.to_thread(
