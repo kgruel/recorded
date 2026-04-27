@@ -115,8 +115,8 @@ def _build_async_wrapper(
         recorder_inst = get_default()
 
         if key is not None:
-            joined = await asyncio.to_thread(
-                _try_join_existing, recorder_inst, entry, key, retry_failed
+            joined = await _async_try_join_existing(
+                recorder_inst, entry, key, retry_failed
             )
             if joined is not _NO_JOIN:
                 return joined
@@ -138,10 +138,9 @@ def _build_async_wrapper(
         except sqlite3.IntegrityError:
             # Lost the race against another caller after our pre-check;
             # fold into the existing row.
-            joined = await asyncio.to_thread(
-                _wait_for_join, recorder_inst, entry, key, retry_failed
+            return await _async_wait_for_join(
+                recorder_inst, entry, key, retry_failed
             )
-            return joined
 
         ctx = JobContext(job_id=job_id, kind=entry.kind, recorder=recorder_inst)
         token = current_job.set(ctx)
@@ -518,15 +517,118 @@ def _wait_for_terminal(
             )
         time.sleep(_POLL_INTERVAL_S)
 
+    return _resolve_terminal(recorder_inst, job_id, entry, key, status)
+
+
+def _resolve_terminal(
+    recorder_inst: Recorder,
+    job_id: str,
+    entry: _registry.RegistryEntry,
+    key: str | None,
+    status: str,
+) -> Any:
     if status == _storage.STATUS_COMPLETED:
         job = recorder_inst.get(job_id)
         return job.response if job is not None else None
     # status == failed
     job = recorder_inst.get(job_id)
-    sibling_error = job.error if (job is not None and isinstance(job.error, dict)) else None
+    sibling_error = (
+        job.error if (job is not None and isinstance(job.error, dict)) else None
+    )
     raise JoinedSiblingFailedError(
         kind=entry.kind,
         key=key or "",
         sibling_job_id=job_id,
         sibling_error=sibling_error,
     )
+
+
+# ---------------------------------------------------------------------------
+# Async-aware join helpers
+# ---------------------------------------------------------------------------
+#
+# The sync versions above sleep on `time.sleep` inside the asyncio
+# threadpool. Under high concurrency (e.g. 50 gathered idempotent calls
+# all colliding on the same key) this exhausts the threadpool: the 49
+# pollers each pin a worker thread, leaving no slot for the winner's
+# `_mark_running` / HTTP / `_mark_completed` to_thread dispatches. The
+# winner deadlocks and every caller times out at 30 s.
+#
+# The fix: in the async wrapper, do the polling on the event loop with
+# `asyncio.sleep`, dispatching only the per-tick status check to a thread.
+# Threadpool occupancy stays at O(1) per joiner; the winner's writes
+# always have a free slot.
+
+
+async def _async_wait_for_terminal(
+    recorder_inst: Recorder,
+    job_id: str,
+    entry: _registry.RegistryEntry,
+    key: str | None,
+) -> Any:
+    deadline = time.monotonic() + _POLL_TIMEOUT_S
+    while True:
+        status = await asyncio.to_thread(recorder_inst._row_status, job_id)
+        if status in _storage.TERMINAL_STATUSES:
+            break
+        if time.monotonic() > deadline:
+            raise JoinTimeoutError(
+                kind=entry.kind,
+                key=key,
+                sibling_job_id=job_id,
+                timeout_s=_POLL_TIMEOUT_S,
+            )
+        await asyncio.sleep(_POLL_INTERVAL_S)
+    return await asyncio.to_thread(
+        _resolve_terminal, recorder_inst, job_id, entry, key, status
+    )
+
+
+async def _async_try_join_existing(
+    recorder_inst: Recorder,
+    entry: _registry.RegistryEntry,
+    key: str,
+    retry_failed: bool,
+) -> Any:
+    found = await asyncio.to_thread(
+        recorder_inst._lookup_active_by_kind_key, entry.kind, key
+    )
+    if found is None:
+        if not retry_failed:
+            failed_id = await asyncio.to_thread(
+                recorder_inst._lookup_latest_failed, entry.kind, key
+            )
+            if failed_id is not None:
+                return await asyncio.to_thread(recorder_inst.get, failed_id)
+        return _NO_JOIN
+
+    job_id, status = found
+    if status == _storage.STATUS_COMPLETED:
+        job = await asyncio.to_thread(recorder_inst.get, job_id)
+        return job.response if job is not None else None
+    return await _async_wait_for_terminal(recorder_inst, job_id, entry, key)
+
+
+async def _async_wait_for_join(
+    recorder_inst: Recorder,
+    entry: _registry.RegistryEntry,
+    key: str | None,
+    retry_failed: bool,
+) -> Any:
+    assert key is not None
+    found = await asyncio.to_thread(
+        recorder_inst._lookup_active_by_kind_key, entry.kind, key
+    )
+    if found is None:
+        if not retry_failed:
+            failed_id = await asyncio.to_thread(
+                recorder_inst._lookup_latest_failed, entry.kind, key
+            )
+            if failed_id is not None:
+                return await asyncio.to_thread(recorder_inst.get, failed_id)
+        raise IdempotencyRaceError(kind=entry.kind, key=key)
+    job_id, status = found
+    if status == _storage.STATUS_COMPLETED:
+        job = await asyncio.to_thread(recorder_inst.get, job_id)
+        return job.response if job is not None else None
+    return await _async_wait_for_terminal(recorder_inst, job_id, entry, key)
