@@ -57,7 +57,14 @@ class JobHandle:
             status = await self._await_async(fut, timeout_s)
         finally:
             self._recorder._unsubscribe(self.job_id, fut)
-        return self._resolve_to_job(status)
+        try:
+            return self._resolve_to_job(status)
+        finally:
+            # Drain the live-result cache. JobHandle.wait() returns the
+            # storage-rehydrated `Job`, so the cache entry would otherwise
+            # leak on the no-sibling-joiner path. A racing same-key bare-
+            # call sibling that consumes first is a no-op for us.
+            self._recorder._take_live_result(self.job_id)
 
     async def _await_async(
         self, fut: concurrent.futures.Future, timeout_s: float
@@ -118,7 +125,11 @@ class JobHandle:
             status = self._await_sync(fut, timeout_s)
         finally:
             self._recorder._unsubscribe(self.job_id, fut)
-        return self._resolve_to_job(status)
+        try:
+            return self._resolve_to_job(status)
+        finally:
+            # See `wait()` above: drain the live-result cache.
+            self._recorder._take_live_result(self.job_id)
 
     def _await_sync(
         self, fut: concurrent.futures.Future, timeout_s: float

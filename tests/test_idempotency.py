@@ -242,3 +242,57 @@ async def test_typed_instance_join_preserves_type_in_process(default_recorder):
     assert joiner_result.order_id == "order-A"
     assert joiner_result.amount == 42
 
+
+
+# --- live-result cache hygiene (regression tests for the leak fix) ----------
+
+
+@pytest.mark.asyncio
+async def test_unkeyed_submit_never_populates_live_result_cache(default_recorder):
+    """Non-keyed `.submit()` has no possible idempotency joiner — there is
+    no cache entry to ever consume. Skipping the stash on key=None paths
+    means heavy `.submit()` traffic without keys produces zero cache growth.
+    """
+
+    @recorder(kind="t.live.unkeyed")
+    async def fn(x):
+        return {"x": x}
+
+    h = fn.submit(7)
+    job = await h.wait(timeout=5.0)
+    assert job.response == {"x": 7}
+    # Cache empty for this job — never stashed.
+    assert h.job_id not in default_recorder._live_results
+
+
+@pytest.mark.asyncio
+async def test_keyed_submit_with_no_joiner_drains_cache_after_wait(default_recorder):
+    """Keyed `.submit().wait()` with no sibling joiner: stash happens (key
+    is not None), no joiner subscribes via `_response_for`, but the wait
+    drain in `JobHandle.wait()` clears the cache so it does not leak per-job."""
+
+    @recorder(kind="t.live.keyed_no_joiner")
+    async def fn(x):
+        return {"x": x}
+
+    h = fn.submit(3, key="kk-no-joiner")
+    job = await h.wait(timeout=5.0)
+    assert job.response == {"x": 3}
+    # Cache drained.
+    assert h.job_id not in default_recorder._live_results
+
+
+def test_keyed_bare_call_no_joiner_clears_cache_on_resolve(default_recorder):
+    """Keyed bare-call with no sibling joiner: `_resolve` runs against an
+    empty subscribers list and pops the stash, so the cache does not grow
+    per-call."""
+
+    @recorder(kind="t.live.bare_keyed_no_joiner")
+    def fn(x):
+        return {"x": x}
+
+    out = fn(11, key="kk-bare-solo")
+    assert out == {"x": 11}
+    # Cache empty — `_resolve` cleared it on the no-subscriber path.
+    assert len(default_recorder._live_results) == 0
+

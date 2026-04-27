@@ -147,7 +147,7 @@ class Worker:
         (
             job_id,
             kind,
-            _key,
+            key,
             _status,
             _submitted_at,
             _started_at,
@@ -185,7 +185,7 @@ class Worker:
 
         try:
             await _run_and_record_async(
-                self.recorder, entry, job_id, _invoke
+                self.recorder, entry, job_id, key, _invoke
             )
         except asyncio.CancelledError:
             # Worker shutdown cancelled this task. The recording layer

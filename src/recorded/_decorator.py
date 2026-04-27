@@ -147,7 +147,9 @@ def _build_async_wrapper(
         async def _invoke() -> Any:
             return await fn(*args, **kwargs)
 
-        return await _run_and_record_async(recorder_inst, entry, job_id, _invoke)
+        return await _run_and_record_async(
+            recorder_inst, entry, job_id, key, _invoke
+        )
 
     _attach_call_modes(async_wrapper, fn, entry, is_async=True)
     return async_wrapper
@@ -185,7 +187,7 @@ def _build_sync_wrapper(
             return _wait_for_join(recorder_inst, entry, key, retry_failed)
 
         return _run_and_record(
-            recorder_inst, entry, job_id, lambda: fn(*args, **kwargs)
+            recorder_inst, entry, job_id, key, lambda: fn(*args, **kwargs)
         )
 
     _attach_call_modes(sync_wrapper, fn, entry, is_async=False)

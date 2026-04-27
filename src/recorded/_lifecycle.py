@@ -182,6 +182,7 @@ def _write_completion(
     recorder_inst: "Recorder",
     entry: _registry.RegistryEntry,
     job_id: str,
+    key: str | None,
     result: Any,
     buffer: dict[str, Any],
 ) -> None:
@@ -191,11 +192,13 @@ def _write_completion(
         else json.dumps(entry.response.serialize(result))
     )
     data_json = _build_data_json(entry, result, buffer)
-    # Stash the live result before the terminal write so same-process
-    # idempotency joiners receive the typed object on consume, not the
-    # storage-rehydrated dict. The stash is consumed by `_take_live_result`;
-    # any leftover entry is swept by the reaper.
-    recorder_inst._stash_live_result(job_id, result)
+    # Stash the live result only for keyed rows — those are the only ones
+    # that can grow same-process idempotency joiners. Non-keyed rows have
+    # no possible joiner (no key to collide on), so caching their result
+    # would just leak. `_resolve` drops the stash if no subscriber was
+    # parked at terminal-write time; `JobHandle.wait()` drains too.
+    if key is not None:
+        recorder_inst._stash_live_result(job_id, result)
     recorder_inst._mark_completed(job_id, _storage.now_iso(), response_json, data_json)
 
 
@@ -243,6 +246,7 @@ def _run_and_record(
     recorder_inst: "Recorder",
     entry: _registry.RegistryEntry,
     job_id: str,
+    key: str | None,
     invoke: Any,  # 0-arg callable returning the wrapped fn's result
 ) -> Any:
     """Set context, invoke `invoke()`, record outcome, re-raise on failure.
@@ -260,7 +264,7 @@ def _run_and_record(
             )
             raise
         try:
-            _write_completion(recorder_inst, entry, job_id, result, ctx.buffer)
+            _write_completion(recorder_inst, entry, job_id, key, result, ctx.buffer)
         except Exception as exc:
             recorder_inst._mark_failed(
                 job_id, _storage.now_iso(), _serialize_recording_failure(exc)
@@ -280,6 +284,7 @@ async def _run_and_record_async(
     recorder_inst: "Recorder",
     entry: _registry.RegistryEntry,
     job_id: str,
+    key: str | None,
     invoke: Any,  # 0-arg callable returning an awaitable of the fn's result
 ) -> Any:
     """Async variant of `_run_and_record`. Used by the bare-call async
@@ -306,7 +311,7 @@ async def _run_and_record_async(
             raise
         try:
             await asyncio.to_thread(
-                _write_completion, recorder_inst, entry, job_id, result, ctx.buffer
+                _write_completion, recorder_inst, entry, job_id, key, result, ctx.buffer
             )
         except Exception as exc:
             await asyncio.to_thread(
