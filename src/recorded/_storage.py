@@ -91,11 +91,16 @@ RETURNING {', '.join(COLUMNS)}
 # Reaper: any row still `running` whose `started_at` predates the threshold
 # is presumed orphaned by a dead process. Conditional UPDATE with RETURNING
 # id so callers can resolve subscribers waiting on those ids.
+#
+# Error JSON shape matches the {type, message} convention used by every
+# other error writer (_serialize_error, _serialize_recording_failure,
+# _CANCEL_ERROR_JSON). Consumers like JoinedSiblingFailedError read .message;
+# any other key is silently dropped.
 REAP_STUCK = """
 UPDATE jobs
    SET status='failed',
        completed_at=?,
-       error_json=json_object('type','orphaned','reason','process_died_while_running')
+       error_json=json_object('type','orphaned','message','process_died_while_running')
  WHERE status='running'
    AND started_at < ?
 RETURNING id

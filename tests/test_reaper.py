@@ -1,7 +1,7 @@
 """Stuck-row reaper: runs on Recorder construction.
 
 Any `running` row whose `started_at` predates `reaper_threshold_s` is
-flipped to `failed` with an `{type: "orphaned", reason: ...}` error
+flipped to `failed` with an `{type: "orphaned", message: ...}` error
 payload. Idempotent across processes (conditional UPDATE).
 """
 
@@ -58,7 +58,7 @@ def test_reaper_marks_orphaned_running_rows_failed_on_start(db_path):
         assert isinstance(job.error, dict)
         assert job.error == {
             "type": "orphaned",
-            "reason": "process_died_while_running",
+            "message": "process_died_while_running",
         }
         assert job.completed_at is not None
     finally:
@@ -124,7 +124,7 @@ def test_reaper_late_completion_silently_dropped(db_path):
         # Reaper's error mark survives.
         assert job_after.error == {
             "type": "orphaned",
-            "reason": "process_died_while_running",
+            "message": "process_died_while_running",
         }
         # Response stayed null — the late UPDATE was a no-op.
         assert job_after.response is None
