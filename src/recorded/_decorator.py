@@ -17,7 +17,6 @@ sibling helpers; this file is the spine.
 from __future__ import annotations
 
 import asyncio
-import concurrent.futures
 import functools
 import inspect
 import sqlite3
@@ -40,7 +39,6 @@ from ._lifecycle import (
     _validate_call_args,
 )
 from ._recorder import (
-    NOTIFY_POLL_INTERVAL_S,
     Recorder,
     get_default,
 )
@@ -367,55 +365,20 @@ def _wait_for_terminal_sync(
     """Subscribe + block until terminal, then resolve to response or raise.
 
     No `time.sleep` — the Future resolves in-process the moment the
-    terminal write commits. Cross-process: the loop's per-iteration
-    timeout (`NOTIFY_POLL_INTERVAL_S`) doubles as the polling cadence;
-    we recheck row status when the wait ticks over.
+    terminal write commits. Cross-process: the wait helper rechecks row
+    status on each polling tick.
     """
+    from ._handle import _wait_for_terminal_sync as _wait_helper
+
     fut = recorder_inst._subscribe(job_id)
     try:
-        status = _await_terminal_sync(
-            recorder_inst,
-            job_id,
-            fut,
-            entry,
-            key,
+        status = _wait_helper(
+            recorder_inst, fut, job_id, entry.kind, key,
             recorder_inst.join_timeout_s,
         )
     finally:
         recorder_inst._unsubscribe(job_id, fut)
     return _resolve_terminal(recorder_inst, job_id, entry, key, status)
-
-
-def _await_terminal_sync(
-    recorder_inst: Recorder,
-    job_id: str,
-    fut: concurrent.futures.Future,
-    entry: _registry.RegistryEntry,
-    key: str | None,
-    timeout_s: float,
-) -> str:
-    import time
-
-    deadline = time.monotonic() + timeout_s
-    while True:
-        remaining = deadline - time.monotonic()
-        if remaining <= 0:
-            raise JoinTimeoutError(
-                kind=entry.kind,
-                key=key,
-                sibling_job_id=job_id,
-                timeout_s=timeout_s,
-            )
-        slice_s = min(remaining, NOTIFY_POLL_INTERVAL_S)
-        try:
-            return fut.result(timeout=slice_s)
-        except concurrent.futures.TimeoutError:
-            # Cross-process fallback: another process may be the leader.
-            # Recheck row status; if terminal, we missed the resolve (or
-            # there was no in-process resolve to miss).
-            status = recorder_inst._row_status(job_id)
-            if status in _storage.TERMINAL_STATUSES:
-                return status
 
 
 async def _async_wait_for_terminal(
@@ -425,14 +388,12 @@ async def _async_wait_for_terminal(
     key: str | None,
 ) -> Any:
     """Async equivalent of `_wait_for_terminal_sync`."""
+    from ._handle import _wait_for_terminal_async as _wait_helper
+
     fut = recorder_inst._subscribe(job_id)
     try:
-        status = await _await_terminal_async(
-            recorder_inst,
-            job_id,
-            fut,
-            entry,
-            key,
+        status = await _wait_helper(
+            recorder_inst, fut, job_id, entry.kind, key,
             recorder_inst.join_timeout_s,
         )
     finally:
@@ -440,43 +401,6 @@ async def _async_wait_for_terminal(
     return await asyncio.to_thread(
         _resolve_terminal, recorder_inst, job_id, entry, key, status
     )
-
-
-async def _await_terminal_async(
-    recorder_inst: Recorder,
-    job_id: str,
-    fut: concurrent.futures.Future,
-    entry: _registry.RegistryEntry,
-    key: str | None,
-    timeout_s: float,
-) -> str:
-    import time
-
-    # Hoist `wrap_future` outside the loop — each call registers a
-    # done-callback on `fut`, so recreating it every cross-process polling
-    # tick accumulates callbacks on the underlying concurrent.futures.Future.
-    async_fut = asyncio.wrap_future(fut)
-    deadline = time.monotonic() + timeout_s
-    while True:
-        remaining = deadline - time.monotonic()
-        if remaining <= 0:
-            raise JoinTimeoutError(
-                kind=entry.kind,
-                key=key,
-                sibling_job_id=job_id,
-                timeout_s=timeout_s,
-            )
-        slice_s = min(remaining, NOTIFY_POLL_INTERVAL_S)
-        try:
-            return await asyncio.wait_for(
-                asyncio.shield(async_fut), timeout=slice_s
-            )
-        except asyncio.TimeoutError:
-            status = await asyncio.to_thread(
-                recorder_inst._row_status, job_id
-            )
-            if status in _storage.TERMINAL_STATUSES:
-                return status
 
 
 async def _async_try_join_existing(

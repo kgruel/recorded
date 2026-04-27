@@ -4,6 +4,12 @@ Both `.wait()` (async) and `.wait_sync()` (sync) subscribe to the wait
 primitive on first call and resolve to a `Job` on success or raise
 `JoinedSiblingFailedError` on failure. Wrap-transparency: the success
 return type is always `Job`; failure is always an exception.
+
+Also exposes module-level `_wait_for_terminal_async` /
+`_wait_for_terminal_sync` helpers so the bare-call idempotency-join
+path (in `_decorator`) can reuse the same polling loop without
+re-implementing the cross-process fallback or risking the wrap_future
+accumulation bug in two places.
 """
 
 from __future__ import annotations
@@ -24,6 +30,81 @@ from ._types import Job
 
 if TYPE_CHECKING:
     from ._recorder import Recorder
+
+
+# ---------------------------------------------------------------------------
+# Shared wait-for-terminal helpers
+# ---------------------------------------------------------------------------
+#
+# Used by both `JobHandle.wait()` / `wait_sync()` and the bare-call
+# idempotency-join path in `_decorator`. One implementation, one place
+# to fix the cross-process polling cadence or the wrap_future hoisting.
+
+
+def _wait_for_terminal_sync(
+    recorder: "Recorder",
+    fut: concurrent.futures.Future,
+    job_id: str,
+    kind: str,
+    key: str | None,
+    timeout_s: float,
+) -> str:
+    """Block until `fut` resolves with a terminal status, with cross-
+    process polling fallback. Returns the terminal status string.
+
+    Raises `JoinTimeoutError` if `timeout_s` elapses first.
+    """
+    deadline = time.monotonic() + timeout_s
+    while True:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise JoinTimeoutError(
+                kind=kind, key=key, sibling_job_id=job_id, timeout_s=timeout_s,
+            )
+        slice_s = min(remaining, NOTIFY_POLL_INTERVAL_S)
+        try:
+            return fut.result(timeout=slice_s)
+        except concurrent.futures.TimeoutError:
+            # Cross-process fallback: another process may be the leader,
+            # so our local Future never resolves. Recheck row status.
+            status = recorder._row_status(job_id)
+            if status in _storage.TERMINAL_STATUSES:
+                return status
+
+
+async def _wait_for_terminal_async(
+    recorder: "Recorder",
+    fut: concurrent.futures.Future,
+    job_id: str,
+    kind: str,
+    key: str | None,
+    timeout_s: float,
+) -> str:
+    """Async variant of `_wait_for_terminal_sync`. SQL status checks go
+    through `asyncio.to_thread` so they don't block the loop.
+
+    `wrap_future` is called once before the loop — each invocation
+    registers a done-callback on the underlying concurrent.futures.Future,
+    so creating it inside the loop body would accumulate callbacks on
+    every cross-process polling tick.
+    """
+    async_fut = asyncio.wrap_future(fut)
+    deadline = time.monotonic() + timeout_s
+    while True:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise JoinTimeoutError(
+                kind=kind, key=key, sibling_job_id=job_id, timeout_s=timeout_s,
+            )
+        slice_s = min(remaining, NOTIFY_POLL_INTERVAL_S)
+        try:
+            return await asyncio.wait_for(
+                asyncio.shield(async_fut), timeout=slice_s,
+            )
+        except asyncio.TimeoutError:
+            status = await asyncio.to_thread(recorder._row_status, job_id)
+            if status in _storage.TERMINAL_STATUSES:
+                return status
 
 
 class JobHandle:
@@ -54,7 +135,9 @@ class JobHandle:
         )
         fut = self._recorder._subscribe(self.job_id)
         try:
-            status = await self._await_async(fut, timeout_s)
+            status = await _wait_for_terminal_async(
+                self._recorder, fut, self.job_id, self._kind, None, timeout_s,
+            )
         finally:
             self._recorder._unsubscribe(self.job_id, fut)
         try:
@@ -65,38 +148,6 @@ class JobHandle:
             # leak on the no-sibling-joiner path. A racing same-key bare-
             # call sibling that consumes first is a no-op for us.
             self._recorder._take_live_result(self.job_id)
-
-    async def _await_async(
-        self, fut: concurrent.futures.Future, timeout_s: float
-    ) -> str:
-        # Hoist `wrap_future` outside the loop. Each call registers a
-        # done-callback on `fut`; recreating it per iteration accumulates
-        # callbacks on the underlying concurrent.futures.Future for every
-        # cross-process polling tick.
-        async_fut = asyncio.wrap_future(fut)
-        deadline = time.monotonic() + timeout_s
-        while True:
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                raise JoinTimeoutError(
-                    kind=self._kind,
-                    key=None,
-                    sibling_job_id=self.job_id,
-                    timeout_s=timeout_s,
-                )
-            slice_s = min(remaining, NOTIFY_POLL_INTERVAL_S)
-            try:
-                return await asyncio.wait_for(
-                    asyncio.shield(async_fut), timeout=slice_s
-                )
-            except asyncio.TimeoutError:
-                # Cross-process fallback — recheck row status in case the
-                # leader is in another process.
-                status = await asyncio.to_thread(
-                    self._recorder._row_status, self.job_id
-                )
-                if status in _storage.TERMINAL_STATUSES:
-                    return status
 
     # ----- sync wait -----
 
@@ -122,7 +173,9 @@ class JobHandle:
         )
         fut = self._recorder._subscribe(self.job_id)
         try:
-            status = self._await_sync(fut, timeout_s)
+            status = _wait_for_terminal_sync(
+                self._recorder, fut, self.job_id, self._kind, None, timeout_s,
+            )
         finally:
             self._recorder._unsubscribe(self.job_id, fut)
         try:
@@ -130,27 +183,6 @@ class JobHandle:
         finally:
             # See `wait()` above: drain the live-result cache.
             self._recorder._take_live_result(self.job_id)
-
-    def _await_sync(
-        self, fut: concurrent.futures.Future, timeout_s: float
-    ) -> str:
-        deadline = time.monotonic() + timeout_s
-        while True:
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                raise JoinTimeoutError(
-                    kind=self._kind,
-                    key=None,
-                    sibling_job_id=self.job_id,
-                    timeout_s=timeout_s,
-                )
-            slice_s = min(remaining, NOTIFY_POLL_INTERVAL_S)
-            try:
-                return fut.result(timeout=slice_s)
-            except concurrent.futures.TimeoutError:
-                status = self._recorder._row_status(self.job_id)
-                if status in _storage.TERMINAL_STATUSES:
-                    return status
 
     # ----- helpers -----
 
