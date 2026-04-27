@@ -62,10 +62,13 @@ class Recorder:
         self.worker_poll_interval_s = worker_poll_interval_s
         self.join_timeout_s = join_timeout_s
 
+        # `_lock` guards Recorder resources: connection lifecycle (`_conn`,
+        # `_closed`) and worker lifecycle (`_worker`). Held briefly; never
+        # held across blocking operations (worker.shutdown(), SQL execute).
         self._lock = threading.Lock()
-        # See PROGRESS_INTEGRATION §3.1: read paths must hold this through
-        # both execute and fetch to avoid stepping a cursor concurrently
-        # with another execute on the shared connection.
+        # `_write_lock` serializes SQL execute+fetch on the shared connection
+        # (see PROGRESS_INTEGRATION §3.1: stepping a cursor concurrently with
+        # another execute on the same conn returns torn rows).
         self._write_lock = threading.Lock()
         self._conn: sqlite3.Connection | None = None
         self._closed = False
@@ -77,24 +80,28 @@ class Recorder:
             str, list[concurrent.futures.Future]
         ] = {}
 
-        # Worker is lazy. `_worker_lock` guards lazy start + shutdown.
-        # Imported lazily to keep the worker dependency optional during
-        # bare-call-only use.
-        self._worker_lock = threading.Lock()
+        # Worker is lazy. Lifecycle (start + shutdown) is under `_lock` so
+        # `_closed` and `_worker` live in the same partition — a shutdown
+        # in flight can't race a concurrent `_ensure_worker()`.
         self._worker: Any | None = None  # _worker.Worker; avoids circular import
 
     # ----- connection lifecycle -----
 
     def _connection(self) -> sqlite3.Connection:
         with self._lock:
+            # If the connection is already open, return it even when
+            # `_closed=True`. This lets in-flight worker tasks finish their
+            # `_mark_failed` writes during shutdown's drain phase. New
+            # connection inits are still blocked by `_closed`.
+            if self._conn is not None:
+                return self._conn
             if self._closed:
                 raise RecorderClosedError(
                     f"Recorder({self.path!r}) has been shut down."
                 )
-            if self._conn is None:
-                self._conn = _storage.open_connection(self.path)
-                _storage.ensure_schema(self._conn)
-                self._reap_stuck_running_unlocked(self._conn)
+            self._conn = _storage.open_connection(self.path)
+            _storage.ensure_schema(self._conn)
+            self._reap_stuck_running_unlocked(self._conn)
             return self._conn
 
     # Public alias of the connection accessor. DESIGN.md names
@@ -134,20 +141,22 @@ class Recorder:
 
     def shutdown(self) -> None:
         """Idempotent: safe to call repeatedly."""
-        # Tear down the worker first (if any). Done outside `_lock` to
-        # avoid blocking an in-flight `_connection()` call from the worker
-        # loop while we wait for the thread to exit.
-        worker = None
-        with self._worker_lock:
-            worker = self._worker
-            self._worker = None
-        if worker is not None:
-            worker.shutdown()
-
+        # Atomically: mark closed (blocks new _ensure_worker) and snapshot
+        # the worker. The conn stays open during drain so in-flight worker
+        # tasks can finalize via `_mark_failed`.
         with self._lock:
             if self._closed:
                 return
             self._closed = True
+            worker = self._worker
+            self._worker = None
+        # Drain. `worker.shutdown()` waits for the worker thread, which
+        # needs to call back into the recorder via `_connection()` —
+        # released the lock before getting here.
+        if worker is not None:
+            worker.shutdown()
+        # Worker drained. Close the connection.
+        with self._lock:
             if self._conn is not None:
                 self._conn.close()
                 self._conn = None
@@ -463,7 +472,10 @@ class Recorder:
     # ----- worker accessors (used by _decorator) -----
 
     def _ensure_worker(self) -> Any:
-        with self._worker_lock:
+        # Construct under `_lock` (same partition as `_closed`). `start()`
+        # spawns a thread but does not block on `_lock` — the new thread
+        # runs after we release.
+        with self._lock:
             if self._closed:
                 raise RecorderClosedError(
                     f"Recorder({self.path!r}) has been shut down."
