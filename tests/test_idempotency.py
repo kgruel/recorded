@@ -192,3 +192,53 @@ async def test_idempotency_retry_failed_false_raises_joined_sibling_failed(
     assert excinfo.value.sibling_error == {"type": "ValueError", "message": "boom"}
     # No second execution happened.
     assert n == 1
+
+
+# --- bug #3: typed-instance joiner gets the typed object, not the storage dict ---
+
+
+@pytest.mark.asyncio
+async def test_typed_instance_join_preserves_type_in_process(default_recorder):
+    """Same-process key-collision joiner receives the leader's live typed
+    object, not the storage-rehydrated dict. Wrap-transparency holds for
+    typed returns under `key=` without requiring `response=Model`.
+
+    Cross-process joiners would still go through storage and need
+    `response=Model` for typed returns — that is the documented advanced
+    contract.
+    """
+    from dataclasses import dataclass
+
+    @dataclass
+    class OrderReply:
+        order_id: str
+        amount: int
+
+    started = asyncio.Event()
+    proceed = asyncio.Event()
+
+    @recorder(kind="t.idem.typed_join")
+    async def place_order(req):
+        started.set()
+        await proceed.wait()
+        return OrderReply(order_id=f"order-{req}", amount=42)
+
+    leader_task = asyncio.create_task(place_order("A", key="kk"))
+    await started.wait()
+
+    joiner_task = asyncio.create_task(place_order("A", key="kk"))
+    # Yield once so the joiner reaches its wait state.
+    await asyncio.sleep(0.05)
+    proceed.set()
+    leader_result, joiner_result = await asyncio.gather(leader_task, joiner_task)
+
+    # Leader gets its live result.
+    assert isinstance(leader_result, OrderReply)
+    assert leader_result.order_id == "order-A"
+
+    # In-process joiner gets the typed instance via the live-result cache,
+    # not a dict.
+    assert isinstance(joiner_result, OrderReply)
+    assert joiner_result.order_id == "order-A"
+    assert joiner_result.amount == 42
+

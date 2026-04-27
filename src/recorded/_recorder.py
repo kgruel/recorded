@@ -80,6 +80,13 @@ class Recorder:
             str, list[concurrent.futures.Future]
         ] = {}
 
+        # Live-result cache: in-process leaders stash their live result
+        # here before the terminal write so same-process idempotency
+        # joiners receive the typed object (not the storage-rehydrated
+        # dict) on consume. Bounded by in-flight joinable rows; entries
+        # are popped on consume; the reaper sweeps stragglers.
+        self._live_results: dict[str, Any] = {}
+
         # Worker is lazy. Lifecycle (start + shutdown) is under `_lock` so
         # `_closed` and `_worker` live in the same partition — a shutdown
         # in flight can't race a concurrent `_ensure_worker()`.
@@ -465,6 +472,26 @@ class Recorder:
             if not fut.done():
                 fut.set_result(status)
 
+    # ----- live-result cache -----
+
+    def _stash_live_result(self, job_id: str, result: Any) -> None:
+        """Stash the in-memory result of a successful execution.
+
+        Called by `_run_and_record` (and its async variant) just before
+        the terminal write, so same-process idempotency joiners can
+        receive the typed object on consume rather than the storage-
+        rehydrated dict. Only same-process joiners benefit; cross-process
+        joiners always go through storage and need `response=Model` to
+        preserve type identity.
+        """
+        with self._lock:
+            self._live_results[job_id] = result
+
+    def _take_live_result(self, job_id: str) -> Any:
+        """Pop the live result for `job_id`. Returns `_MISSING` if absent."""
+        with self._lock:
+            return self._live_results.pop(job_id, _MISSING)
+
     # ----- reaper -----
 
     def _reap_stuck_running_unlocked(self, conn: sqlite3.Connection) -> None:
@@ -474,6 +501,11 @@ class Recorder:
         with `self._lock` held. Not gated by `_write_lock` because no
         other thread can hold a connection reference yet — the lazy
         connection has only just been created.
+
+        Also sweeps the live-result cache: any reaped row was orphaned by
+        a dead process, so any stash from a prior (now-dead) process is
+        gone anyway, but stale entries from the current process for rows
+        the reaper just failed are dropped.
         """
         threshold_iso = _storage.format_iso(
             datetime.now(timezone.utc)
@@ -483,6 +515,7 @@ class Recorder:
             _storage.REAP_STUCK, (_storage.now_iso(), threshold_iso)
         ).fetchall()
         for (job_id,) in rows:
+            self._live_results.pop(job_id, None)
             self._resolve(job_id, _storage.STATUS_FAILED)
 
     # ----- worker accessors (used by _decorator) -----
@@ -507,6 +540,10 @@ class Recorder:
 
 
 # ----- helpers -----
+
+
+# Sentinel for "no cache entry" — distinct from `None` (a valid stashed value).
+_MISSING: Any = object()
 
 
 def _normalize_iso(value: str | datetime) -> str:

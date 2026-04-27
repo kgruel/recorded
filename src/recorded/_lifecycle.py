@@ -191,6 +191,11 @@ def _write_completion(
         else json.dumps(entry.response.serialize(result))
     )
     data_json = _build_data_json(entry, result, buffer)
+    # Stash the live result before the terminal write so same-process
+    # idempotency joiners receive the typed object on consume, not the
+    # storage-rehydrated dict. The stash is consumed by `_take_live_result`;
+    # any leftover entry is swept by the reaper.
+    recorder_inst._stash_live_result(job_id, result)
     recorder_inst._mark_completed(job_id, _storage.now_iso(), response_json, data_json)
 
 
