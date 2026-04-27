@@ -14,7 +14,6 @@ Exceptions to the rule:
 
 - The wrapped function's own exceptions propagate verbatim. The library
   records them and re-raises; we do not wrap user-domain errors.
-- `NotImplementedError` (stdlib) is used for the phase-2 `.submit` stub.
 - `JoinTimeoutError` multi-inherits `TimeoutError` so `except TimeoutError`
   still catches it, in addition to `except IdempotencyError`.
 """
@@ -43,10 +42,6 @@ class ConfigurationError(UsageError):
     - A model passed to `request=`/`response=`/`data=`/`error=` is neither a
       dataclass nor a Pydantic v2 model
     """
-
-
-class AttachOutsideJobError(UsageError):
-    """`attach()` called when no recorded function is on the call stack."""
 
 
 class SyncInLoopError(UsageError):

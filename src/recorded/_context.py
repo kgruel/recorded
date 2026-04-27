@@ -1,8 +1,11 @@
 """ContextVars for the currently-executing recorded function.
 
 `current_job` carries a `JobContext` whenever execution is inside a
-recorded wrapper. `attach()` consults this contextvar to find the buffer
-to write into.
+recorded wrapper. `attach()` and `attach_error()` consult this contextvar
+to find the buffer to write into; both no-op when no context is set, so
+removing `@recorder` (the basic-feature-set wrap-transparency contract)
+leaves call-site `attach()`/`attach_error()` calls as silent no-ops
+rather than raising.
 
 contextvars propagate naturally through `await` and across `asyncio.gather`
 (each task gets its own context copy), so concurrent recorded calls in
@@ -15,8 +18,6 @@ from contextvars import ContextVar
 from dataclasses import dataclass, field
 from typing import Any
 
-from ._errors import AttachOutsideJobError
-
 
 _UNSET: Any = object()
 
@@ -26,11 +27,11 @@ class JobContext:
     """Per-call context carried in a contextvar.
 
     `recorder` is the Recorder driving the call (used by `attach(flush=True)`
-    in phase 1.3 to write through). `buffer` accumulates `attach()` pairs
+    for immediate write-through). `buffer` accumulates `attach()` pairs
     that get flushed at completion. `error_buffer` is a single-slot
-    full-replace payload populated by `attach_error()` when the wrapper
-    has `error=Model` registered; the wrapper consults it on the failure
-    path. Sentinel `_UNSET` distinguishes "never set" from "set to None".
+    full-replace payload populated by `attach_error()`; the recording
+    layer consults it on the failure path. Sentinel `_UNSET` distinguishes
+    "never set" from "set to None".
     """
 
     job_id: str
@@ -47,20 +48,17 @@ def attach(key: str, value: Any, *, flush: bool = False) -> None:
     """Stash a key/value pair into the running job's data buffer.
 
     By default the pair lands in an in-memory buffer that is flushed once
-    at completion. `flush=True` writes through immediately via json_patch
-    (implemented in phase 1.3).
+    at completion. `flush=True` writes through immediately via json_patch.
+
+    Outside a recorded context, `attach()` is a silent no-op. Removing
+    `@recorder` from a function should not require also removing all the
+    `attach()` calls in its body.
     """
     ctx = current_job.get()
     if ctx is None:
-        raise AttachOutsideJobError(
-            "attach() called outside a recorded function. "
-            "It must be called from within the body of a function decorated "
-            "with @recorder."
-        )
+        return
     ctx.buffer[key] = value
     if flush:
-        # Phase 1.3 will implement immediate write-through via json_patch.
-        # For phase 1.1 the buffer behavior is the only one exercised.
         ctx.recorder._flush_attach(ctx.job_id, key, value)
 
 
@@ -68,22 +66,19 @@ def attach_error(payload: Any) -> None:
     """Stash a structured error payload for the running job's `error` slot.
 
     Mirrors `attach()` but writes to the single-slot `error_buffer` with
-    full-replace semantics (last call wins). The wrapper consults this
-    on the exception path and serializes it through the registered
-    `error=Model` adapter; if no `attach_error()` was called the wrapper
-    falls back to the default `{type, message}` shape from the original
-    exception.
+    full-replace semantics (last call wins). The recording layer routes
+    the payload through the slot adapter on the exception path —
+    `error=Model` validates it through the model; passthrough renders
+    via `_to_native`. If no `attach_error()` was called, the recording
+    falls back to `{type, message}` from the original exception.
 
     The wrapped function's exception still propagates verbatim —
     `attach_error()` only re-shapes the *recording*, not the raise.
-    Wrap-transparency: removing `@recorder` and the `attach_error()`
-    call doesn't change the exception the caller sees.
+    Outside a recorded context, `attach_error()` is a silent no-op for
+    the same reason `attach()` is: removing `@recorder` shouldn't require
+    rewriting the function body.
     """
     ctx = current_job.get()
     if ctx is None:
-        raise AttachOutsideJobError(
-            "attach_error() called outside a recorded function. "
-            "It must be called from within the body of a function decorated "
-            "with @recorder."
-        )
+        return
     ctx.error_buffer = payload

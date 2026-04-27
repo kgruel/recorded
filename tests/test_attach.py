@@ -9,12 +9,17 @@ import pytest
 
 from recorded import attach, recorder
 from recorded._context import JobContext, current_job
-from recorded._errors import AttachOutsideJobError
 
 
-def test_attach_outside_job_raises():
-    with pytest.raises(AttachOutsideJobError):
-        attach("k", "v")
+def test_attach_outside_job_is_a_silent_noop():
+    """Basic-feature-set wrap-transparency: removing `@recorder` and
+    forgetting to remove the `attach()` calls inside the function should
+    not explode the caller. Side-effect-only APIs go silent when there
+    is nothing to act on.
+    """
+    # Should not raise.
+    attach("k", "v")
+    attach("k", "v", flush=True)
 
 
 def test_attach_buffers_into_current_context():

@@ -3,10 +3,12 @@
 Public surface:
     - `Recorder` class (connection, lifecycle, read API, worker, reaper)
     - `recorder` decorator
-    - `attach(key, value)` for mid-execution annotations
+    - `attach(key, value, *, flush=False)` for mid-execution annotations
+    - `attach_error(payload)` for structured error payloads on the failure path
     - `JobHandle` returned from `.submit()`
     - `Job` dataclass
     - Module-level read API: `get`, `last`, `list`, `connection`
+    - `configure(...)` for the module-level default Recorder
 """
 
 from __future__ import annotations

@@ -14,7 +14,6 @@ from dataclasses import dataclass
 import pytest
 
 from recorded import attach_error, recorder
-from recorded._errors import AttachOutsideJobError
 
 
 # --- shared fixtures -------------------------------------------------------
@@ -71,10 +70,12 @@ def test_attach_error_full_replace_semantics_last_call_wins(default_recorder):
     assert job.error.correlation_id == "c2"
 
 
-def test_attach_error_outside_job_raises():
-    """Matches `attach()`'s `AttachOutsideJobError` precedent."""
-    with pytest.raises(AttachOutsideJobError):
-        attach_error({"anything": "at all"})
+def test_attach_error_outside_job_is_a_silent_noop():
+    """Mirrors `attach()`: side-effect-only API, no context → no side
+    effect. Removing `@recorder` should leave the function body's
+    `attach_error()` calls as silent no-ops."""
+    # Should not raise.
+    attach_error({"anything": "at all"})
 
 
 # --- error=Model fallback paths --------------------------------------------

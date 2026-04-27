@@ -206,8 +206,9 @@ def _attach_call_modes(
 ) -> None:
     """Attach `.sync`, `.async_run`, `.submit` to the wrapper.
 
-    Per the brief, `.submit` raises `NotImplementedError` in phase 1 —
-    the worker lands in phase 2.
+    `.submit(req)` inserts a `pending` row and returns a `JobHandle`; the
+    worker (lazy-started on first submit) picks it up. `.sync()` and
+    `.async_run()` cross between sync and async call modes.
     """
 
     if is_async:
