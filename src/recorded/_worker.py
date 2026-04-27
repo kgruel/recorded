@@ -178,12 +178,14 @@ class Worker:
 
         request = entry.request.deserialize(_loads(request_json))
 
-        if inspect.iscoroutinefunction(entry.fn):
+        fn = entry.fn
+
+        if inspect.iscoroutinefunction(fn):
             async def _invoke():
-                return await entry.fn(request)
+                return await fn(request)
         else:
             async def _invoke():
-                return await asyncio.to_thread(entry.fn, request)
+                return await asyncio.to_thread(fn, request)
 
         try:
             await _run_and_record_async(

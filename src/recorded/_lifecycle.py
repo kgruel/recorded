@@ -380,7 +380,7 @@ def _project_response(kind: str, model: type, response: Any) -> dict[str, Any]:
         if isinstance(response, model):
             return response.model_dump(mode="json")
         if isinstance(response, dict):
-            return model.model_validate(response).model_dump(mode="json")
+            return model.model_validate(response).model_dump(mode="json")  # type: ignore
         if hasattr(response, "model_dump"):
             dumped = response.model_dump(mode="json")
             if names:
