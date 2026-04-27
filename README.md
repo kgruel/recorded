@@ -1,6 +1,7 @@
 # recorded
 
-Typed function-call recorder backed by SQLite. See `DESIGN.md` for the full design.
+Typed function-call recorder backed by SQLite. See `OVERVIEW.md` for an
+architecture tour and `DESIGN.md` for the full design spec.
 
 ## Local development
 
