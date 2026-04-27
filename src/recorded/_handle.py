@@ -42,7 +42,7 @@ if TYPE_CHECKING:
 
 
 def _wait_for_terminal_sync(
-    recorder: "Recorder",
+    recorder: Recorder,
     fut: concurrent.futures.Future,
     job_id: str,
     kind: str,
@@ -73,7 +73,7 @@ def _wait_for_terminal_sync(
 
 
 async def _wait_for_terminal_async(
-    recorder: "Recorder",
+    recorder: Recorder,
     fut: concurrent.futures.Future,
     job_id: str,
     kind: str,
@@ -112,7 +112,7 @@ class JobHandle:
 
     __slots__ = ("job_id", "_recorder", "_kind")
 
-    def __init__(self, job_id: str, recorder: "Recorder", kind: str) -> None:
+    def __init__(self, job_id: str, recorder: Recorder, kind: str) -> None:
         self.job_id = job_id
         self._recorder = recorder
         self._kind = kind

@@ -4,16 +4,14 @@
 from __future__ import annotations
 
 import sqlite3
+from collections.abc import Iterator
 from datetime import datetime, timedelta, timezone
-from typing import Iterator
 
 import pytest
 
 import recorded
-from recorded import Job, Recorder, recorder
-from recorded import _storage
+from recorded import Job, Recorder, _storage, recorder
 from recorded._errors import ConfigurationError
-
 
 # ----- connection -----
 

@@ -17,7 +17,6 @@ from recorded import recorder
 pydantic = pytest.importorskip("pydantic")
 from pydantic import BaseModel  # noqa: E402
 
-
 # --- shared shapes ---------------------------------------------------------
 
 

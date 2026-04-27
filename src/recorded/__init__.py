@@ -14,8 +14,9 @@ Public surface:
 from __future__ import annotations
 
 import sqlite3
+from collections.abc import Iterator
 from datetime import datetime
-from typing import Any, Iterator
+from typing import Any
 
 from ._context import attach, attach_error
 from ._decorator import recorder

@@ -40,7 +40,7 @@ _CANCEL_ERROR_JSON = make_error_json(
 class Worker:
     """Owns one asyncio event loop running on a dedicated thread."""
 
-    def __init__(self, recorder: "Recorder") -> None:
+    def __init__(self, recorder: Recorder) -> None:
         self.recorder = recorder
         self._loop: asyncio.AbstractEventLoop | None = None
         self._thread: threading.Thread | None = None

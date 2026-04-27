@@ -22,8 +22,9 @@ import concurrent.futures
 import json
 import sqlite3
 import threading
+from collections.abc import Iterator
 from datetime import datetime, timedelta, timezone
-from typing import Any, Iterator
+from typing import Any
 
 from . import _registry, _storage
 from ._errors import ConfigurationError, RecorderClosedError
@@ -184,14 +185,14 @@ class Recorder:
                 self._conn.close()
                 self._conn = None
 
-    def __enter__(self) -> "Recorder":
+    def __enter__(self) -> Recorder:
         self._connection()
         return self
 
     def __exit__(self, exc_type, exc, tb) -> None:
         self.shutdown()
 
-    async def __aenter__(self) -> "Recorder":
+    async def __aenter__(self) -> Recorder:
         # Bootstrap the connection on the threadpool so the loop stays
         # responsive during the first-touch reaper sweep.
         import asyncio

@@ -8,13 +8,11 @@ re-shapes the recording.
 
 from __future__ import annotations
 
-import asyncio
 from dataclasses import dataclass
 
 import pytest
 
 from recorded import attach_error, recorder
-
 
 # --- shared fixtures -------------------------------------------------------
 

@@ -8,8 +8,6 @@ from dataclasses import dataclass
 import pytest
 
 from recorded import recorder
-from recorded import _storage
-
 
 # --- shared helpers --------------------------------------------------------
 

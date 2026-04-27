@@ -26,7 +26,6 @@ from __future__ import annotations
 
 from typing import Any
 
-
 _REQUIRED_ATTRS = ("method", "url", "headers", "query_params")
 
 

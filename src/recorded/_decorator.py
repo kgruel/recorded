@@ -20,15 +20,14 @@ import asyncio
 import functools
 import inspect
 import sqlite3
-from typing import Any, Callable
+from collections.abc import Callable
+from typing import Any
 
 from . import _registry, _storage
 from ._adapter import Adapter
 from ._errors import (
-    ConfigurationError,
     IdempotencyRaceError,
     JoinedSiblingFailedError,
-    JoinTimeoutError,
     SyncInLoopError,
 )
 from ._lifecycle import (
@@ -42,7 +41,6 @@ from ._recorder import (
     Recorder,
     get_default,
 )
-
 
 # ---------------------------------------------------------------------------
 # Decorator
@@ -248,7 +246,12 @@ def _attach_call_modes(
     # a JobHandle. Worker (lazy-started on the Recorder) picks up the row.
     # Idempotency-collision: if `key` is already active, return a handle
     # bound to the existing row.
-    def _submit(*args: Any, key: str | None = None, retry_failed: bool = True, **kwargs: Any) -> Any:
+    def _submit(
+        *args: Any,
+        key: str | None = None,
+        retry_failed: bool = True,
+        **kwargs: Any,
+    ) -> Any:
         from ._handle import JobHandle
 
         _validate_call_args(entry, key, args, kwargs, submit=True)
@@ -272,7 +275,7 @@ def _attach_call_modes(
             # joining the row that exists now.
             existing = _try_join_handle(recorder_inst, entry, key, retry_failed)
             if existing is None:
-                raise IdempotencyRaceError(kind=entry.kind, key=key)
+                raise IdempotencyRaceError(kind=entry.kind, key=key) from None
             recorder_inst._ensure_worker()
             return existing
 

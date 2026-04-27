@@ -9,7 +9,6 @@ context manager wired for FastAPI lifespan.
 from __future__ import annotations
 
 import asyncio
-import os
 import subprocess
 import sys
 import textwrap
@@ -20,7 +19,6 @@ import recorded
 from recorded import Recorder, recorder
 from recorded import _recorder as _recorder_mod
 from recorded._errors import JoinTimeoutError
-
 
 # --- shared fixture: ensure each test starts with no module-level default ---
 

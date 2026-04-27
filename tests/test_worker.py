@@ -9,9 +9,7 @@ import time
 
 import pytest
 
-from recorded import JobHandle, Recorder, attach, recorder
-from recorded import _storage
-
+from recorded import JobHandle, Recorder, _storage, attach, recorder
 
 # ---- lazy start ----------------------------------------------------------
 
@@ -284,7 +282,6 @@ def test_worker_marks_claimed_row_failed_if_shutdown_fires_after_claim(db_path):
 
     Forces the timing by monkey-patching `_claim_one` to set the
     `_loop_shutdown` event before returning the row."""
-    import asyncio as aio_mod
     import json
 
     rec = Recorder(path=db_path)

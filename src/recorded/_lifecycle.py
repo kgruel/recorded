@@ -192,7 +192,7 @@ def _serialize_recording_failure(exc: BaseException) -> str:
 
 
 def _write_completion(
-    recorder_inst: "Recorder",
+    recorder_inst: Recorder,
     entry: _registry.RegistryEntry,
     job_id: str,
     key: str | None,
@@ -256,7 +256,7 @@ def _build_data_json(
 
 
 def _run_and_record(
-    recorder_inst: "Recorder",
+    recorder_inst: Recorder,
     entry: _registry.RegistryEntry,
     job_id: str,
     key: str | None,
@@ -300,7 +300,7 @@ def _run_and_record(
 
 
 async def _run_and_record_async(
-    recorder_inst: "Recorder",
+    recorder_inst: Recorder,
     entry: _registry.RegistryEntry,
     job_id: str,
     key: str | None,

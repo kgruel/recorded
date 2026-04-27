@@ -19,7 +19,6 @@ import pytest
 from recorded import Recorder, recorder
 from recorded import _recorder as _recorder_mod
 
-
 # Cap every CLI invocation so a bug can't hang CI.
 SUBPROCESS_TIMEOUT_S = 2.0
 
@@ -84,11 +83,11 @@ def test_cli_last_prints_n_completed_jobs_descending(seeded_db_path):
     """Named test: `last` returns and formats rows; ordering correct."""
     proc = _run_cli("last", "3", "--path", seeded_db_path)
     assert proc.returncode == 0, proc.stderr
-    lines = [l for l in proc.stdout.splitlines() if l.strip()]
+    lines = [line for line in proc.stdout.splitlines() if line.strip()]
     assert len(lines) == 3
 
     # Descending by submitted_at: each line's leading timestamp >= next.
-    timestamps = [l.split()[0] for l in lines]
+    timestamps = [line.split()[0] for line in lines]
     assert timestamps == sorted(timestamps, reverse=True)
 
     # One-line format: timestamp, status, kind, id-prefix, key=...
@@ -111,13 +110,13 @@ def test_cli_last_filters_by_kind_glob_and_status(seeded_db_path):
         seeded_db_path,
     )
     assert proc.returncode == 0, proc.stderr
-    lines = [l for l in proc.stdout.splitlines() if l.strip()]
+    lines = [line for line in proc.stdout.splitlines() if line.strip()]
     # 2 failed flaky rows.
     assert len(lines) == 2
-    for l in lines:
+    for line in lines:
         # status column is the 2nd whitespace-separated token.
-        assert l.split()[1] == "failed"
-        assert "broker.flaky" in l
+        assert line.split()[1] == "failed"
+        assert "broker.flaky" in line
 
 
 # ----- get ----------------------------------------------------------------
@@ -260,7 +259,7 @@ def test_cli_tail_emits_new_terminal_rows_after_watermark(tmp_path):
     # Pre-existing rows must not appear; new rows must.
     assert "t.tail.pre" not in stdout
     assert "t.tail.post" in stdout
-    new_lines = [l for l in stdout.splitlines() if "t.tail.post" in l]
+    new_lines = [line for line in stdout.splitlines() if "t.tail.post" in line]
     assert len(new_lines) == 2
 
 

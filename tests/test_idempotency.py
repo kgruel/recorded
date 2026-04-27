@@ -9,7 +9,6 @@ import pytest
 from recorded import recorder
 from recorded._errors import ConfigurationError
 
-
 # --- call-time validation of key= against auto-derived kind ---------------
 
 

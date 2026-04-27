@@ -14,7 +14,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import sqlite3
 import threading
 import time
 from dataclasses import dataclass
@@ -23,10 +22,8 @@ import httpx
 import pytest
 from werkzeug.wrappers import Response
 
-from recorded import Recorder, attach, get, last, recorder
-from recorded import _recorder as _recorder_mod
+from recorded import attach, last, recorder
 from recorded._errors import SyncInLoopError
-
 
 # --- helpers --------------------------------------------------------------
 

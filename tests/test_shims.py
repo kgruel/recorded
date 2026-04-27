@@ -53,8 +53,9 @@ async def test_async_run_shim_runs_sync_function_from_async_caller(default_recor
 async def test_async_run_propagates_attach_via_to_thread(default_recorder):
     """contextvars propagate through `asyncio.to_thread`, so attach() works
     inside a sync function called via `.async_run`."""
-    from recorded import attach
     import json
+
+    from recorded import attach
 
     @recorder(kind="t.shim.attach")
     def sfn():

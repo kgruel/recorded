@@ -10,7 +10,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 import pytest
-from hypothesis import given, strategies as st
+from hypothesis import given
+from hypothesis import strategies as st
 
 from recorded._adapter import Adapter
 from recorded._types import Job

@@ -14,8 +14,7 @@ import time
 
 import pytest
 
-from recorded import Recorder, recorder
-from recorded import _storage
+from recorded import Recorder, _storage, recorder
 
 
 def test_subscribe_resolves_when_terminal_write_commits(recorder: Recorder):
