@@ -122,15 +122,16 @@ def _build_async_wrapper(
         captured_request = _capture_request(args, kwargs)
         request_json = _serialize_request(entry, captured_request)
         job_id = _storage.new_id()
-        submitted_at = _storage.now_iso()
+        now = _storage.now_iso()
 
         try:
             await asyncio.to_thread(
-                recorder_inst._insert_pending,
+                recorder_inst._insert_running,
                 job_id,
                 entry.kind,
                 key,
-                submitted_at,
+                now,
+                now,
                 request_json,
             )
         except sqlite3.IntegrityError:
@@ -143,9 +144,6 @@ def _build_async_wrapper(
         ctx = JobContext(job_id=job_id, kind=entry.kind, recorder=recorder_inst)
         token = current_job.set(ctx)
         try:
-            await asyncio.to_thread(
-                recorder_inst._mark_running, job_id, _storage.now_iso()
-            )
             try:
                 result = await fn(*args, **kwargs)
             except Exception as exc:
@@ -212,11 +210,11 @@ def _build_sync_wrapper(
         captured_request = _capture_request(args, kwargs)
         request_json = _serialize_request(entry, captured_request)
         job_id = _storage.new_id()
-        submitted_at = _storage.now_iso()
+        now = _storage.now_iso()
 
         try:
-            recorder_inst._insert_pending(
-                job_id, entry.kind, key, submitted_at, request_json
+            recorder_inst._insert_running(
+                job_id, entry.kind, key, now, now, request_json
             )
         except sqlite3.IntegrityError:
             return _wait_for_join(recorder_inst, entry, key, retry_failed)
@@ -224,7 +222,6 @@ def _build_sync_wrapper(
         ctx = JobContext(job_id=job_id, kind=entry.kind, recorder=recorder_inst)
         token = current_job.set(ctx)
         try:
-            recorder_inst._mark_running(job_id, _storage.now_iso())
             try:
                 result = fn(*args, **kwargs)
             except Exception as exc:

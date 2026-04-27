@@ -22,10 +22,10 @@ def test_subscribe_resolves_when_terminal_write_commits(recorder: Recorder):
     """Named test: register a Future before the terminal write; the
     terminal SQL UPDATE resolves it exactly once with the terminal status."""
     job_id = _storage.new_id()
-    recorder._insert_pending(
-        job_id, "t.subscribe", None, _storage.now_iso(), None
+    now = _storage.now_iso()
+    recorder._insert_running(
+        job_id, "t.subscribe", None, now, now, None
     )
-    recorder._mark_running(job_id, _storage.now_iso())
 
     fut = recorder._subscribe(job_id)
     assert not fut.done()
@@ -48,10 +48,10 @@ def test_subscribe_returns_immediately_if_already_terminal(
     """Named test: subscribing after the terminal write doesn't deadlock;
     the future is pre-resolved before `_subscribe` returns."""
     job_id = _storage.new_id()
-    recorder._insert_pending(
-        job_id, "t.subscribe.after", None, _storage.now_iso(), None
+    now = _storage.now_iso()
+    recorder._insert_running(
+        job_id, "t.subscribe.after", None, now, now, None
     )
-    recorder._mark_running(job_id, _storage.now_iso())
     recorder._mark_completed(job_id, _storage.now_iso(), '{}', None)
 
     fut = recorder._subscribe(job_id)
@@ -66,10 +66,10 @@ def test_resolve_only_fires_when_conditional_update_matches(
     (e.g. the reaper) is silently dropped — the late `_mark_completed` /
     `_mark_failed` doesn't re-resolve subscribers."""
     job_id = _storage.new_id()
-    recorder._insert_pending(
-        job_id, "t.resolve.gate", None, _storage.now_iso(), None
+    now = _storage.now_iso()
+    recorder._insert_running(
+        job_id, "t.resolve.gate", None, now, now, None
     )
-    recorder._mark_running(job_id, _storage.now_iso())
     recorder._mark_failed(job_id, _storage.now_iso(), '{"type":"X"}')
 
     # Late completion: conditional UPDATE doesn't match (status != running).
@@ -105,8 +105,8 @@ def test_idempotency_join_in_process_does_not_poll_with_sleep(
     # Pre-seed a pending row that the joiner will wait on.
     rec = default_recorder
     job_id = _storage.new_id()
-    rec._insert_pending(job_id, "t.notify.sync.unify", "kk", _storage.now_iso(), None)
-    rec._mark_running(job_id, _storage.now_iso())
+    now = _storage.now_iso()
+    rec._insert_running(job_id, "t.notify.sync.unify", "kk", now, now, None)
 
     join_result: dict = {}
 

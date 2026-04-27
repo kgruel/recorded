@@ -293,8 +293,24 @@ class Recorder:
             (job_id, kind, key, submitted_at, request_json),
         )
 
-    def _mark_running(self, job_id: str, started_at: str) -> None:
-        self._execute(_storage.UPDATE_RUNNING, (started_at, job_id))
+    def _insert_running(
+        self,
+        job_id: str,
+        kind: str,
+        key: str | None,
+        submitted_at: str,
+        started_at: str,
+        request_json: str | None,
+    ) -> None:
+        """Bare-call insert: row enters as `running` in one write.
+
+        The caller is about to execute the function itself, so the row
+        never occupies `pending`. Worker can never claim it.
+        """
+        self._execute(
+            _storage.INSERT_RUNNING,
+            (job_id, kind, key, submitted_at, started_at, request_json),
+        )
 
     def _mark_completed(
         self,

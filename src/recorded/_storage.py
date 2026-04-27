@@ -58,6 +58,18 @@ INSERT INTO jobs (id, kind, key, status, submitted_at, request_json)
 VALUES (?, ?, ?, 'pending', ?, ?)
 """
 
+# Bare-call path inserts directly as 'running' in one atomic write — the
+# caller is about to execute the function itself, so there's no `pending`
+# state to occupy. Keeps `pending` exclusively as "queued for the worker"
+# and removes the race window where the worker could claim a bare-call row.
+INSERT_RUNNING = """
+INSERT INTO jobs (id, kind, key, status, submitted_at, started_at, request_json)
+VALUES (?, ?, ?, 'running', ?, ?, ?)
+"""
+
+# Test-only: the worker's CLAIM_ONE handles `pending → running` atomically
+# in production; this UPDATE is retained for test fixtures that seed rows
+# at a specific status. Not used by any production code path.
 UPDATE_RUNNING = """
 UPDATE jobs SET status='running', started_at=? WHERE id=? AND status='pending'
 """
