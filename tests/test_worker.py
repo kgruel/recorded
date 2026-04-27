@@ -219,3 +219,148 @@ async def test_submit_returns_handle_whose_wait_resolves_to_terminal_job(
     assert job.status == "completed"
     assert job.response == {"x": 5, "ok": True}
     assert job.id == h.job_id
+
+
+# ---- UnknownKind: kind-registering module not imported in this process ----
+
+
+def test_worker_marks_unknown_kind_pending_row_as_failed(default_recorder):
+    """Documented cross-process scenario: a worker process didn't import
+    the module that defined this `kind`. The row is marked failed with
+    `{type: "UnknownKind", message: ...}` so it doesn't strand at
+    `running` for the reaper threshold."""
+    import json
+
+    rec = default_recorder
+
+    # Pre-seed a pending row whose kind is NOT registered in this process.
+    unknown_id = _storage.new_id()
+    rec._insert_pending(
+        unknown_id,
+        "ext.unknown_in_this_process",
+        None,
+        _storage.now_iso(),
+        '{"x": 1}',
+    )
+
+    # Start the worker by submitting a registered kind. The worker's
+    # claim loop will pick up our seeded pending row too.
+    @recorder(kind="t.worker.unknown_kind_trigger")
+    def trigger(x):
+        return x
+
+    h = trigger.submit(0)
+    h.wait_sync(timeout=5.0)
+
+    # Wait briefly for the worker to fail the unknown-kind row.
+    deadline = time.monotonic() + 5.0
+    while time.monotonic() < deadline:
+        job = rec.get(unknown_id)
+        if job is not None and job.status == _storage.STATUS_FAILED:
+            break
+        time.sleep(0.02)
+
+    job = rec.get(unknown_id)
+    assert job is not None
+    assert job.status == _storage.STATUS_FAILED
+
+    # Error JSON shape: {type: "UnknownKind", message: "..."}
+    raw = rec._fetchone(
+        "SELECT error_json FROM jobs WHERE id=?", (unknown_id,)
+    )
+    err = json.loads(raw[0])
+    assert err["type"] == "UnknownKind"
+    assert "ext.unknown_in_this_process" in err["message"]
+
+
+# ---- claim-then-shutdown narrow window -----------------------------------
+
+
+def test_worker_marks_claimed_row_failed_if_shutdown_fires_after_claim(db_path):
+    """Narrow race the main loop guards against: `_claim_one` succeeded,
+    but `_loop_shutdown` is set before the task is spawned. The row is
+    marked failed with `_CANCEL_ERROR_JSON` rather than left at `running`
+    for the reaper threshold to recover.
+
+    Forces the timing by monkey-patching `_claim_one` to set the
+    `_loop_shutdown` event before returning the row."""
+    import asyncio as aio_mod
+    import json
+
+    rec = Recorder(path=db_path)
+    from recorded import _recorder as _recorder_mod
+
+    _recorder_mod._set_default(rec)
+
+    @recorder(kind="t.worker.claim_then_shutdown")
+    def fn(x):
+        return x
+
+    try:
+        # Pre-seed a pending row.
+        target_id = _storage.new_id()
+        rec._insert_pending(
+            target_id, "t.worker.claim_then_shutdown", None,
+            _storage.now_iso(), '"x"',
+        )
+
+        # Start the worker (lazy-start via submit of a different row that
+        # the worker won't actually claim because we'll intercept).
+        worker = rec._ensure_worker()
+
+        # Wait for the worker loop to be ready.
+        deadline = time.monotonic() + 2.0
+        while worker._loop is None and time.monotonic() < deadline:
+            time.sleep(0.005)
+        assert worker._loop is not None
+
+        # Monkey-patch `_claim_one` to set `_loop_shutdown` BEFORE returning
+        # the seeded row, simulating shutdown firing in the gap between
+        # claim-success and task-spawn.
+        original_claim = rec._claim_one
+        triggered = threading.Event()
+
+        def claim_then_signal_shutdown(*args, **kwargs):
+            row = original_claim(*args, **kwargs)
+            if row is not None and row[0] == target_id and not triggered.is_set():
+                triggered.set()
+                # Set the event from the worker's loop thread.
+                worker._loop.call_soon_threadsafe(
+                    worker._loop_shutdown.set
+                )
+                # Tiny pause so the event-set is processed before the
+                # main loop's next is_set() check.
+                time.sleep(0.01)
+            return row
+
+        rec._claim_one = claim_then_signal_shutdown  # type: ignore[method-assign]
+
+        # Wait for the worker to claim and bail.
+        deadline = time.monotonic() + 5.0
+        while time.monotonic() < deadline:
+            if triggered.is_set():
+                # Give the worker a moment to write the cancel marker.
+                time.sleep(0.1)
+                break
+            time.sleep(0.02)
+
+        # Worker thread should have exited (loop_shutdown is set).
+        # Don't assert thread-gone yet — shutdown() will join below.
+    finally:
+        rec.shutdown()
+        _recorder_mod._set_default(None)
+
+    # Verify the seeded row was marked failed with the cancel-marker shape
+    # (not left at `running`).
+    rec2 = Recorder(path=db_path)
+    try:
+        job = rec2.get(target_id)
+        assert job is not None
+        assert job.status == _storage.STATUS_FAILED
+        raw = rec2._fetchone(
+            "SELECT error_json FROM jobs WHERE id=?", (target_id,)
+        )
+        err = json.loads(raw[0])
+        assert err["type"] == "CancelledError"
+    finally:
+        rec2.shutdown()

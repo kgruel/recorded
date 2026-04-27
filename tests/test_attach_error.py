@@ -191,3 +191,42 @@ def test_attach_error_in_passthrough_mode_populates_error_slot(default_recorder)
     # Passthrough rehydrates as a plain dict.
     assert job.error == {"code": "E_RATE", "retry_after": 30, "detail": "rate limited"}
 
+
+
+# --- _safe_deserialize: error=Model + fallback-shaped row -------------------
+
+
+def test_recorder_get_with_error_model_returns_raw_dict_for_fallback_shape(
+    default_recorder,
+):
+    """`error=Model` rehydration on the read path uses `_safe_deserialize`:
+    if `error_json` was recorded under the fallback `{type, message}`
+    shape (e.g. the function raised without calling `attach_error`, or
+    the model adapter rejected the attached payload), constructing the
+    typed model would crash. `_safe_deserialize` catches the construction
+    failure and returns the raw decoded dict so `Recorder.get(...).error`
+    is always queryable.
+    """
+
+    @recorder(kind="t.err.fallback_via_get", error=BrokerError)
+    def fn(req):
+        # No `attach_error` — falls back to {type, message}.
+        raise RuntimeError("plain failure")
+
+    with pytest.raises(RuntimeError):
+        fn({"x": 1})
+
+    rows = default_recorder.last(1, kind="t.err.fallback_via_get")
+    assert len(rows) == 1
+    job_id = rows[0].id
+
+    # Read via `Recorder.get(...)` — exercises `_row_to_job` →
+    # `_safe_deserialize`. The error is rehydrated as the raw dict,
+    # not the typed BrokerError.
+    job = default_recorder.get(job_id)
+    assert job is not None
+    assert job.error == {"type": "RuntimeError", "message": "plain failure"}
+    # Importantly NOT a BrokerError instance — the model adapter would
+    # have crashed on the {type, message} dict (BrokerError requires
+    # code/message/correlation_id), and `_safe_deserialize` swallowed it.
+    assert not isinstance(job.error, BrokerError)

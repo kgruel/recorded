@@ -296,3 +296,103 @@ def test_keyed_bare_call_no_joiner_clears_cache_on_resolve(default_recorder):
     # Cache empty — `_resolve` cleared it on the no-subscriber path.
     assert len(default_recorder._live_results) == 0
 
+
+
+# --- IdempotencyRaceError raise sites (post-INSERT lookup returns None) ----
+#
+# Three call paths each raise `IdempotencyRaceError` when the post-INSERT
+# active-row lookup finds nothing — the narrow window where the prior
+# holder cleaned up between our INSERT-violation and our lookup.
+# Practically rare; tests force the path via monkeypatch and assert the
+# error's kind / key attributes are populated.
+
+
+def test_submit_raises_idempotency_race_when_post_insert_lookup_returns_none(
+    default_recorder, monkeypatch
+):
+    """`.submit(key=K)` site (`_decorator._submit`)."""
+    from recorded import _storage as _storage_mod
+    from recorded._errors import IdempotencyRaceError
+
+    rec = default_recorder
+
+    @recorder(kind="t.race.submit")
+    def fn(x):
+        return x
+
+    # Pre-seed a `running` row so our INSERT collides on the partial
+    # unique index.
+    blocker_id = _storage_mod.new_id()
+    now = _storage_mod.now_iso()
+    rec._insert_running(
+        blocker_id, "t.race.submit", "kk-race-submit", now, now, '"x"'
+    )
+
+    # Force the active-row lookup to return None on both the pre-INSERT
+    # check (which then proceeds to the INSERT) and the post-INSERT
+    # recovery (which then raises).
+    monkeypatch.setattr(
+        rec, "_lookup_active_by_kind_key", lambda kind, key: None
+    )
+
+    with pytest.raises(IdempotencyRaceError) as excinfo:
+        fn.submit(1, key="kk-race-submit")
+    assert excinfo.value.kind == "t.race.submit"
+    assert excinfo.value.key == "kk-race-submit"
+
+
+def test_sync_bare_call_raises_idempotency_race_when_post_insert_lookup_returns_none(
+    default_recorder, monkeypatch
+):
+    """Sync bare-call site (`_decorator._wait_for_join`)."""
+    from recorded import _storage as _storage_mod
+    from recorded._errors import IdempotencyRaceError
+
+    rec = default_recorder
+
+    @recorder(kind="t.race.bare_sync")
+    def fn(x):
+        return x
+
+    blocker_id = _storage_mod.new_id()
+    now = _storage_mod.now_iso()
+    rec._insert_running(
+        blocker_id, "t.race.bare_sync", "kk-race-sync", now, now, '"x"'
+    )
+    monkeypatch.setattr(
+        rec, "_lookup_active_by_kind_key", lambda kind, key: None
+    )
+
+    with pytest.raises(IdempotencyRaceError) as excinfo:
+        fn(1, key="kk-race-sync")
+    assert excinfo.value.kind == "t.race.bare_sync"
+    assert excinfo.value.key == "kk-race-sync"
+
+
+@pytest.mark.asyncio
+async def test_async_bare_call_raises_idempotency_race_when_post_insert_lookup_returns_none(
+    default_recorder, monkeypatch
+):
+    """Async bare-call site (`_decorator._async_wait_for_join`)."""
+    from recorded import _storage as _storage_mod
+    from recorded._errors import IdempotencyRaceError
+
+    rec = default_recorder
+
+    @recorder(kind="t.race.bare_async")
+    async def fn(x):
+        return x
+
+    blocker_id = _storage_mod.new_id()
+    now = _storage_mod.now_iso()
+    rec._insert_running(
+        blocker_id, "t.race.bare_async", "kk-race-async", now, now, '"x"'
+    )
+    monkeypatch.setattr(
+        rec, "_lookup_active_by_kind_key", lambda kind, key: None
+    )
+
+    with pytest.raises(IdempotencyRaceError) as excinfo:
+        await fn(1, key="kk-race-async")
+    assert excinfo.value.kind == "t.race.bare_async"
+    assert excinfo.value.key == "kk-race-async"
