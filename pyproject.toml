@@ -1,0 +1,31 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "recorded"
+version = "0.1.0"
+description = "Typed function-call recorder backed by SQLite"
+readme = "README.md"
+requires-python = ">=3.10"
+license = "MIT"
+authors = [{name = "recorded contributors"}]
+dependencies = []
+
+[project.optional-dependencies]
+pydantic = ["pydantic>=2"]
+dev = [
+    "pytest>=8",
+    "pytest-asyncio>=0.23",
+    "hypothesis>=6",
+    "pydantic>=2",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/recorded"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "strict"
+testpaths = ["tests"]
+
+# Runtime requires SQLite >= 3.35.0 (UPDATE ... RETURNING).
