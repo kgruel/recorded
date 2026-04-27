@@ -50,10 +50,35 @@ class Recorder:
             return self._conn
 
     def _execute(self, sql: str, params: tuple = ()) -> sqlite3.Cursor:
-        """Serialize all execute() calls through `_write_lock`."""
+        """Serialize all execute() calls through `_write_lock`.
+
+        Note: callers that *read* must use `_fetchone` / `_fetchall`
+        instead — pulling rows off the returned cursor after the lock has
+        been released races concurrent writers and surfaces (rarely) as
+        `IndexError` from a partially-stepped cursor.
+        """
         conn = self._connection()
         with self._write_lock:
             return conn.execute(sql, params)
+
+    def _fetchone(self, sql: str, params: tuple = ()) -> tuple | None:
+        """Execute + fetchone, both inside `_write_lock`.
+
+        Required for safety under `asyncio.to_thread` concurrency: the
+        sqlite3 cursor is bound to a shared connection; stepping it from
+        one thread while another thread starts a new execute() on the
+        same connection can return a malformed row. The unit suite never
+        triggered this; the 50-gathered idempotency test surfaced it
+        immediately.
+        """
+        conn = self._connection()
+        with self._write_lock:
+            return conn.execute(sql, params).fetchone()
+
+    def _fetchall(self, sql: str, params: tuple = ()) -> list[tuple]:
+        conn = self._connection()
+        with self._write_lock:
+            return conn.execute(sql, params).fetchall()
 
     def shutdown(self) -> None:
         """Idempotent: safe to call repeatedly."""
@@ -75,13 +100,13 @@ class Recorder:
     # ----- read API -----
 
     def get(self, job_id: str) -> Job | None:
-        row = self._execute(_storage.SELECT_BY_ID, (job_id,)).fetchone()
+        row = self._fetchone(_storage.SELECT_BY_ID, (job_id,))
         if row is None:
             return None
         return _row_to_job(row)
 
     def last(self, n: int = 10, *, kind: str | None = None) -> list[Job]:
-        rows = self._execute(_storage.SELECT_LAST, (kind, kind, n)).fetchall()
+        rows = self._fetchall(_storage.SELECT_LAST, (kind, kind, n))
         return [_row_to_job(r) for r in rows]
 
     # ----- lifecycle writes -----
@@ -125,9 +150,7 @@ class Recorder:
         )
 
     def _row_status(self, job_id: str) -> str | None:
-        row = self._execute(
-            "SELECT status FROM jobs WHERE id = ?", (job_id,)
-        ).fetchone()
+        row = self._fetchone("SELECT status FROM jobs WHERE id = ?", (job_id,))
         return None if row is None else row[0]
 
     def _lookup_active_by_kind_key(
@@ -138,22 +161,22 @@ class Recorder:
         Active = pending/running/completed (the partial-unique-index set).
         Used by the idempotency-collision branch.
         """
-        row = self._execute(
+        row = self._fetchone(
             "SELECT id, status FROM jobs "
             "WHERE kind=? AND key=? AND status IN ('pending','running','completed')",
             (kind, key),
-        ).fetchone()
+        )
         return None if row is None else (row[0], row[1])
 
     def _lookup_latest_failed(
         self, kind: str, key: str
     ) -> str | None:
-        row = self._execute(
+        row = self._fetchone(
             "SELECT id FROM jobs "
             "WHERE kind=? AND key=? AND status='failed' "
             "ORDER BY submitted_at DESC LIMIT 1",
             (kind, key),
-        ).fetchone()
+        )
         return None if row is None else row[0]
 
     def _flush_attach(self, job_id: str, key: str, value: Any) -> None:
