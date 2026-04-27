@@ -67,18 +67,27 @@ The partial index does the load-bearing work for idempotency. Multiple
 `failed` rows allowed (history); at most one
 `pending`/`running`/`completed` row per `(kind, key)`.
 
-## The lifecycle: three writes
+## The lifecycle
 
-Every recorded call writes three rows-of-state:
+Bare and submitted calls now diverge — `pending` exclusively means
+"queued for the worker." See `DESIGN.md` Addendum §3 for the rationale.
 
 ```
-INSERT pending  →  UPDATE running  →  UPDATE {completed|failed}
+bare:        INSERT running                         →  UPDATE {completed|failed}
+submitted:   INSERT pending  →  UPDATE running      →  UPDATE {completed|failed}
+                                (atomic claim by worker)
 ```
 
-Same shape for every code path — bare call, submitted call, sync, async.
+The bare call inserts a row directly as `running` with `started_at`
+populated in the same statement (`INSERT_RUNNING`). The submitted path
+inserts as `pending` and the worker's `CLAIM_ONE` does the atomic
+`pending → running` transition. The worker can never see a bare-call
+row, which is what makes the worker-double-claiming-bare-call-row class
+of race structurally impossible.
+
 `Recorder` exposes private write methods (`_insert_pending`,
-`_mark_running`, `_mark_completed`, `_mark_failed`); they all serialize
-through one `_write_lock` against a single SQLite connection.
+`_insert_running`, `_mark_completed`, `_mark_failed`); they all
+serialize through one `_write_lock` against a single SQLite connection.
 
 ## Trace a call: bare path
 
@@ -99,25 +108,32 @@ What happens (`_decorator.py`):
 2. `_capture_request(args, kwargs)` — single positional → that arg;
    otherwise → `{"args": [...], "kwargs": {...}}` envelope.
 3. `_serialize_request(...)` → JSON via the request adapter.
-4. `_insert_pending(job_id, kind, key, submitted_at, request_json)` —
-   first write.
+4. `_insert_running(job_id, kind, key, submitted_at, started_at,
+   request_json)` — first (and only pre-terminal) write. Bare-call rows
+   skip `pending` entirely.
 5. **`current_job` ContextVar set to a fresh `JobContext`** holding the
    data buffer, the error buffer, and the recorder reference. Crucial —
-   this is what `attach()` and `attach_error()` read.
-6. `_mark_running(job_id, started_at)` — second write.
-7. The wrapped function executes. While running, it can call
-   `attach(key, value)` (key-merged into the data buffer via
-   `json_patch`) or `attach_error(payload)` (full-replace into the error
-   buffer).
-8. Branch:
+   this is what `attach()` and `attach_error()` read. Set inside
+   `_run_and_record` (`_lifecycle.py`).
+6. The wrapped function executes via `_run_and_record(...)`. While
+   running, it can call `attach(key, value)` (key-merged into the data
+   buffer via `json_patch`) or `attach_error(payload)` (full-replace
+   into the error buffer).
+7. Branch:
    - **Success**: `_write_completion()` serializes response + data via
      adapters, projects response into data via `_project_response`,
-     merges with the attach buffer, calls `_mark_completed(...)` —
-     third write. Returns the function's natural value (transparency
-     invariant).
+     merges with the attach buffer, stashes the live result if `key` is
+     set, calls `_mark_completed(...)` — terminal write. Returns the
+     function's natural value (transparency invariant). If
+     `_write_completion` itself raises, the row is marked failed, a
+     warning is logged on the `recorded` logger, and `result` is still
+     returned to the caller — wrap-transparency requires the bare-call
+     surface never raise an exception class the wrapped function
+     wouldn't.
    - **Failure**: `_serialize_error()` consults the error buffer (uses
      `error=Model` adapter if `attach_error()` was called; falls back
-     to `{type, message}`). Calls `_mark_failed(...)` — third write.
+     to `{type, message}` and logs a warning if the typed adapter
+     rejects the payload). Calls `_mark_failed(...)` — terminal write.
      Re-raises the original exception (wrap-transparency: removing
      `@recorder` doesn't change exception shape).
 
@@ -264,7 +280,9 @@ ContextVar (not `threading.local`) because:
 `attach(key, value)` writes to the data buffer; flushed at completion
 (or `flush=True` writes through immediately via `json_patch`).
 `attach_error(payload)` writes to `error_buffer` with last-write-wins.
-Both raise `AttachOutsideJobError` if called outside an active context.
+Both are silent no-ops outside an active context — wrap-transparency:
+removing `@recorder` shouldn't require deleting `attach()` calls. (See
+`DESIGN.md` Addendum §2.)
 
 ## The reaper
 
@@ -384,15 +402,17 @@ src/recorded/
   _adapter.py     — slot adapter (passthrough/dataclass/pydantic)
   _cli.py         — last/get/tail subcommands
   _context.py     — current_job ContextVar + attach() + attach_error()
-  _decorator.py   — @recorder + bare-call lifecycle + idempotency join
+  _decorator.py   — @recorder + thin call-surface wrappers (bare sync, bare async, .submit)
   _errors.py      — exception hierarchy
-  _handle.py      — JobHandle (.wait async + .wait_sync)
-  _recorder.py    — Recorder (connection, writes, notify, reaper, configure)
+  _handle.py      — JobHandle + canonical _wait_for_terminal_{sync,async} helpers
+  _lifecycle.py   — _run_and_record + _validate_call_args + _serialize_*
+                    + _write_completion (recording machinery shared by bare and worker)
+  _recorder.py    — Recorder (connection, writes, notify, live-result cache, reaper, configure)
   _registry.py    — kind → RegistryEntry
   _storage.py     — schema DDL, canonical SQL, helpers
   _types.py       — Job dataclass + duration_ms + to_prompt()
-  _worker.py      — Worker (asyncio loop in dedicated thread)
+  _worker.py      — Worker (asyncio loop in dedicated thread; thin: claim → _run_and_record_async)
   fastapi.py      — capture_request(request) (duck-typed)
 ```
 
-~1500 LOC of core in 13 files; 136 tests in ~4.5 s.
+~3500 LOC of core in 14 files; 150 tests.

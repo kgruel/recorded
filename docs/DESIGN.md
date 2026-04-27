@@ -1,6 +1,6 @@
 # recorded — design notes
 
-Package: `recorded` (PyPI). Decorator: `recorder`. Class: `Recorder`. Status: design-stage, pre-code.
+Package: `recorded` (PyPI). Decorator: `recorder`. Class: `Recorder`. Status: shipped. The body below is the original design spec; sections that have since changed are marked inline with `[superseded: see Addendum §N]` and corrected in the **Addendum: post-RESHAPE consolidation** at the end.
 
 ## What it is
 
@@ -104,6 +104,8 @@ Same observability, same reaper behavior, same idempotency semantics, same `atta
 
 This costs the bare call ~1ms (one extra UPDATE vs. an "insert directly as running" optimization). At broker-API scale that's <1%, and the consistency in mental model is worth it.
 
+> **[superseded: see Addendum §3]** — the bare call now inserts directly as `running` (one write, not two before terminal). `pending` exclusively means "queued for the worker." The "consistency in mental model" argument was outweighed by the structural-bug class it admitted (worker double-claiming bare-call rows).
+
 ## Idempotency
 
 When you supply `key=` at the call site, the library enforces "at most one active execution per `(kind, key)` pair":
@@ -164,6 +166,8 @@ If you need crash-safe intermediate durability (rare), `attach(key, value, flush
 
 Implemented via `contextvars`, which propagate naturally through `await` boundaries and across `asyncio.gather` (each task gets its own context). If `attach()` is called outside a recorded function, it raises. Tasks/threads spawned by the wrapped function won't see the current job unless they explicitly propagate the context — document the limitation.
 
+> **[superseded: see Addendum §2]** — `attach()` and `attach_error()` are now silent no-ops outside a recorded context. Wrap-transparency: removing `@recorder` shouldn't require deleting `attach()` calls.
+
 Conflict rule: if both `data=Projection` and `attach()` are used, the projection populates initial keys; attaches merge in last-write-wins. Caller owns avoiding key collisions.
 
 ## Exception hierarchy
@@ -174,7 +178,7 @@ All library-raised exceptions inherit from `RecordedError`. Two main subtrees pl
 RecordedError
 ├── UsageError                       # programming/configuration mistakes
 │   ├── ConfigurationError           # bad decorator setup (key+auto-kind, bad model type)
-│   ├── AttachOutsideJobError        # attach() called outside a recorded function
+│   ├── AttachOutsideJobError        # attach() called outside a recorded function  [removed: see Addendum §2]
 │   ├── SyncInLoopError              # .sync() called from inside a running event loop
 │   ├── RecorderClosedError          # operation on a shut-down Recorder
 │   └── SerializationError           # value doesn't fit the registered slot model
@@ -190,7 +194,7 @@ Rules:
 - **Catch at any level of specificity.** `except RecordedError:` catches every library-raised error; `except UsageError:` catches "you used the API wrong"; `except IdempotencyError:` catches all idempotency outcomes; specific classes catch one situation.
 - **`JoinTimeoutError` multi-inherits `TimeoutError`** so `except TimeoutError:` callers still catch it.
 - **Concrete classes carry structured fields** (e.g. `JoinedSiblingFailedError.sibling_job_id`, `SerializationError.value`) so callers can act programmatically, not just log a string.
-- **`NotImplementedError` (stdlib) is used for the phase-2 `.submit` stub** — semantically the right shape, replaced when the worker lands.
+- **`NotImplementedError` (stdlib) is used for the phase-2 `.submit` stub** — semantically the right shape, replaced when the worker lands. *[obsolete: `.submit` is shipped; the stub is gone.]*
 
 ## Schema
 
@@ -331,7 +335,7 @@ Multi-process safe; SQLite WAL handles concurrent writers.
 
 ### Stuck-row reaper
 
-On `Recorder.start()`:
+On `Recorder.start()`:  *[superseded: see Addendum §7 — there is no `Recorder.start()`; the reaper runs on first `_connection()`.]*
 
 ```sql
 UPDATE jobs
@@ -363,6 +367,8 @@ class WorkerContract:
 
 Anyone — Celery worker, k8s cron, custom script — can drive jobs by implementing against this. The default async loop is just one implementation.
 
+> **[not built: see Addendum §8]** — `WorkerContract` was deferred. Driving jobs from outside the default worker today means using `recorded.connection()` and the `_storage` SQL constants directly. Promoted to a real contract once a second worker implementation actually exists.
+
 ## Multi-process notes
 
 - **FastAPI under `uvicorn --workers N`**: each process lazy-starts its own worker on first `.submit()`. All N compete for `pending` rows via atomic claim. Correct, gives parallelism for free.
@@ -393,6 +399,8 @@ recorded.configure(path="/var/lib/myapp/jobs.db")
 async with recorded.Recorder(path=":memory:") as r:
     await place_order(req)   # routed to r within the with-block via contextvar
 ```
+
+> **[superseded: see Addendum §6]** — there is no contextvar-based dispatch from explicit `Recorder` instances to decorated callables. `place_order(req)` always routes through `get_default()`. Explicit `Recorder` instances drive jobs through their own methods (`r.get`, `r.list`, etc.); to point a decorated function at a non-default Recorder, swap the default via `recorded.configure(...)` or call methods on the Recorder directly.
 
 `Recorder.shutdown()` is **idempotent** — safe to call multiple times across overlapping lifecycle hooks (atexit, FastAPI lifespan, explicit shutdown in tests).
 
@@ -440,3 +448,117 @@ Other subcommands: `python -m recorded last [N]`, `python -m recorded get <job_i
 - **`uuid4().hex` for IDs:** unique, zero state, no cross-process coordination. Sort order comes from `submitted_at`. ULIDs were a vibe choice that turned out to require monotonic-within-millisecond state and locking — not worth the complexity.
 - **Idempotency requires explicit `kind=`:** the auto-derived kind silently changes when functions are renamed. Combining auto-kind with `key=` gives a false sense of safety that fails exactly when you needed it (after a refactor, on retry). Refusing to compile is louder than warning, and the cost is one explicit name once per idempotent action.
 - **No actor, no schema_version, no honker, no dry-run, no aggregation helpers:** every feature that didn't earn its keep got cut. The library got smaller through design, not bigger.
+
+---
+
+# Addendum: post-RESHAPE consolidation
+
+A code review surfaced five bugs that all clustered around one structural fault: the bare-call path and the worker path were written as parallel implementations of the same lifecycle, and they drifted apart in subtle ways. Rather than fix the bugs in place, the library was restructured so the duplications dissolve and the bug class becomes structurally impossible. The original design above remains substantively correct; this addendum captures what changed.
+
+## §1. Three-tier opt-in cost
+
+Each step into the library's surface is a deliberate choice; the library never imposes itself. Three tiers:
+
+- **Basic / wrap-transparent**: bare-call (sync or async), `key=` for idempotency on bare-call, `attach()`, `attach_error()`. Removable along with `@recorder` without rewriting call sites. Cost = one SQLite write.
+- **Inspection**: `recorded.last`, `recorded.get`, `recorded.list`, the CLI. Names the library, but no infrastructure cost.
+- **Advanced**: `.submit()`, `JobHandle.wait()`, anything cross-process. Worker thread + asyncio loop light up here.
+
+## §2. Wrap-transparency, scoped to basic
+
+Bare calls return the wrapped function's natural value (or raise the function's natural exception); removing `@recorder` and `key=` leaves working code with the same return-type and exception-type shape. Advanced surfaces are not bound by this — `JobHandle.wait()` returns a `Job`, intentionally ("you opted into the queue surface; you handle Job objects").
+
+Concrete consequences enforced in code:
+
+- **`attach()` / `attach_error()` no-op outside a recorded context.** No `AttachOutsideJobError`. Removing `@recorder` and forgetting to remove an `attach()` call should not explode the caller; side-effect-only APIs are silent when there's nothing to act on.
+- **Recording-failure on the success path does not raise.** If the wrapped function returned successfully but `_write_completion` raises (response not JSON-serializable, transient SQLite failure), the row is marked `failed`, a warning is logged on the `recorded` logger, and the wrapped function's `result` is propagated to the caller. The bare equivalent would never raise — neither does the decorated form.
+- **`error=Model` adapter rejecting an `attach_error` payload does not raise.** Falls back to `{type, message}` of the original exception, logs a warning. Raising a `SerializationError` would itself violate wrap-transparency by replacing the user's exception with one the bare function couldn't produce.
+
+## §3. Lifecycle: bare and submitted now diverge
+
+`pending` exclusively means "queued for the worker." Bare-call rows never enter `pending`.
+
+- **Bare call**: `INSERT running → UPDATE {completed | failed}`. Two writes.
+- **Submitted call**: `INSERT pending → UPDATE running` (atomic claim by the worker) `→ UPDATE {completed | failed}`. Three writes.
+
+The worker can never see a bare-call row, so the worker-double-claims-bare-call-row race is structurally impossible. `_mark_running` no longer exists. Bare-call rows' `started_at` is set in the same `INSERT_RUNNING` statement.
+
+## §4. Module structure
+
+Bottom-up; each layer only knows about what's below it.
+
+```
+_storage.py     — schema, SQL constants, timestamp helpers (no state)
+_adapter.py     — slot serialization (passthrough/dataclass/pydantic)
+_errors.py      — exception hierarchy
+_types.py       — Job dataclass, to_prompt
+_registry.py    — kind → RegistryEntry
+_recorder.py    — Recorder: conn, locks, writes, notify, live-result cache, reaper, lazy worker
+_context.py     — ContextVar + attach/attach_error (no-op outside context)
+_lifecycle.py   — _run_and_record, _validate_call_args, _serialize_*, _write_completion
+_handle.py      — JobHandle + canonical _wait_for_terminal_{sync,async} polling helpers
+_decorator.py   — @recorder + thin wrappers (bare-call sync, bare-call async, .submit)
+_worker.py      — Worker thread + asyncio loop (thin: claim → _run_and_record_async)
+_cli.py, __init__.py, fastapi.py
+```
+
+`_lifecycle.py` is the new piece. It holds the recording machinery — context setup, exception routing, completion-write — that previously lived duplicated across `_decorator.py` and `_worker.py`. Bare-call (sync, async) and worker all delegate into a single `_run_and_record` / `_run_and_record_async`. Sync/async asymmetry lives in the call surface and the invocation closure, not in the recording layer.
+
+`_handle.py` holds the canonical wait-loop helpers. `_decorator._wait_for_terminal_sync` and `_async_wait_for_terminal` are now thin wrappers around `_handle._wait_for_terminal_{sync,async}`; one fix-site for one polling-loop bug.
+
+## §5. Live-result stash
+
+The only genuinely new mechanism. Same-process idempotency joiners need to receive the leader's typed return value, not the storage-rehydrated dict — without forcing every typed-return user to declare `response=Model`.
+
+```python
+# _lifecycle._write_completion (sketch):
+def _write_completion(recorder, entry, job_id, key, result, buffer):
+    response_json = json.dumps(entry.response.serialize(result)) if result is not None else None
+    data_json = _build_data_json(entry, result, buffer)
+    if key is not None:
+        recorder._stash_live_result(job_id, result)  # only if a joiner is possible
+    recorder._mark_completed(job_id, _storage.now_iso(), response_json, data_json)
+```
+
+`_live_results: dict[job_id, Any]` is guarded by `_notify_lock` (the same lock `_resolve` already holds, to keep stash/take/clear and subscribe/notify atomic together). Cleanup paths:
+
+- **Skip-stash on `key=None`**: non-keyed rows have no possible joiner; no point caching.
+- **`_resolve` clears the cache on the no-subscriber path**: if no joiner was parked at terminal-resolution time, no consumer will follow.
+- **`JobHandle.wait()` / `wait_sync()` drain the cache after returning the Job**: the handle's own subscriber kept `_resolve` from clearing, but the storage-based return path doesn't consume.
+- **Reaper sweep clears entries for rows it just reaped** from `running` to `failed`.
+
+The cache only grows under genuine concurrent-joiner pressure; in steady state it's empty.
+
+Cross-process joiners always go through storage and need `response=Model` to preserve type identity. Documented advanced contract.
+
+## §6. Recorder dispatch
+
+`@recorder`-wrapped callables route through `recorded.get_default()`. There is **no** contextvar-based routing from an explicit `async with Recorder(...) as r` block to decorated callables. To point a decorated function at a non-default Recorder, either:
+
+- Use `recorded.configure(path=...)` (process-wide).
+- Drive jobs through the explicit Recorder's own methods (`r.get`, `r.list`, the read API).
+
+Constructing a `Recorder(path=...)` directly does **not** register `atexit.register(r.shutdown)` — only `recorded.configure(...)` does. Direct construction expects a `with` block (or explicit `r.shutdown()`) for clean teardown. Documented in `Recorder.__init__`'s docstring.
+
+## §7. Reaper trigger
+
+The reaper runs on `Recorder._connection()` first init — i.e., the first SQLite touch after construction. There is no `Recorder.start()`. Conditional UPDATE means at-most-once-per-row even if multiple recorders boot against the same DB concurrently.
+
+## §8. BYO worker — deferred
+
+`WorkerContract` from the original design is not built. Driving jobs from outside the default worker today means using `recorded.connection()` and the `_storage` SQL constants (`CLAIM_ONE`, `INSERT_PENDING`, `UPDATE_COMPLETED`, `UPDATE_FAILED`, `make_error_json`) directly. Promote to a real contract once a second worker implementation actually exists; until then, hard-coding it would be Chekhov's gun.
+
+## §9. Bug-by-bug dissolution (historical)
+
+The five bugs from the pre-RESHAPE review and how they dissolved:
+
+| # | Bug | Dissolves because |
+|---|-----|-------------------|
+| 1 | Worker invoked multi-arg `.submit()` jobs as a single positional arg | `.submit()` refuses multi-arg call shape at call time (extension of the existing `_validate_call_args` precedent). One enforcement site; the malformed envelope can't reach the worker. |
+| 2 | `REAP_STUCK` wrote `{type, reason}` but consumers read `.message` | One JSON-shape helper (`make_error_json`). The reaper composes through it. |
+| 3 | Idempotency join broke wrap-transparency for typed-instance returns without `response=Model` | Leader stashes live result; in-process joiners receive it via `_take_live_result`. Wrap-transparency holds for the in-process basic case. Cross-process is a documented advanced contract requiring `response=Model`. |
+| 4 | Worker could claim and double-execute bare-call rows | Bare-call inserts directly as `running`. `pending` exclusively means "queued for the worker"; `CLAIM_ONE` cannot see a bare-call row. |
+| 5 | `asyncio.wrap_future` accumulated done-callbacks inside polling loop | One polling loop in `_handle.py`; `wrap_future` hoisted outside it. |
+
+## §10. Remaining design intent unchanged
+
+The body above remains authoritative on: slot primitive, type-adapter tiers, decorator parameters, schema (DDL, indices, WAL, SQLite version floor), idempotency semantics (auto-kind refusal, `retry_failed` rules, partial unique index), exception hierarchy structure, read-API surface and DSL line, atomic claim SQL, multi-process notes, timestamps, CLI, deferred-features list, and the "why this shape" rationale.
