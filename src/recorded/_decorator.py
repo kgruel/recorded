@@ -17,11 +17,11 @@ sibling helpers; this file is the spine.
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
 import functools
 import inspect
 import json
 import sqlite3
-import time
 from dataclasses import is_dataclass
 from typing import Any, Callable
 
@@ -36,13 +36,12 @@ from ._errors import (
     SerializationError,
     SyncInLoopError,
 )
-from ._recorder import Recorder, get_default
-
-# Idempotency-poll cadence (seconds) when waiting for a racing caller's
-# pending/running row to terminate. Phase-2 will replace this with an
-# in-process subscriber wakeup; phase-1 polls.
-_POLL_INTERVAL_S = 0.005
-_POLL_TIMEOUT_S = 30.0
+from ._recorder import (
+    DEFAULT_JOIN_TIMEOUT_S,
+    NOTIFY_POLL_INTERVAL_S,
+    Recorder,
+    get_default,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -306,11 +305,40 @@ def _attach_call_modes(
         wrapper.sync = _sync  # type: ignore[attr-defined]
         wrapper.async_run = _async_run  # type: ignore[attr-defined]
 
-    def _submit(*args: Any, **kwargs: Any) -> Any:
-        raise NotImplementedError(
-            "submit-and-poll is implemented in phase 2. "
-            "Use the bare call, `.sync(...)`, or `.async_run(...)` for now."
-        )
+    # `.submit(req, key=None, retry_failed=True)` — INSERT pending and return
+    # a JobHandle. Worker (lazy-started on the Recorder) picks up the row.
+    # Idempotency-collision: if `key` is already active, return a handle
+    # bound to the existing row.
+    def _submit(*args: Any, key: str | None = None, retry_failed: bool = True, **kwargs: Any) -> Any:
+        from ._handle import JobHandle
+
+        _validate_call_args(entry, key)
+        recorder_inst = get_default()
+
+        if key is not None:
+            existing = _try_join_handle(recorder_inst, entry, key, retry_failed)
+            if existing is not None:
+                recorder_inst._ensure_worker()
+                return existing
+
+        captured_request = _capture_request(args, kwargs)
+        request_json = _serialize_request(entry, captured_request)
+        job_id = _storage.new_id()
+        try:
+            recorder_inst._insert_pending(
+                job_id, entry.kind, key, _storage.now_iso(), request_json
+            )
+        except sqlite3.IntegrityError:
+            # Another caller beat us into the active slot. Recover by
+            # joining the row that exists now.
+            existing = _try_join_handle(recorder_inst, entry, key, retry_failed)
+            if existing is None:
+                raise IdempotencyRaceError(kind=entry.kind, key=key)
+            recorder_inst._ensure_worker()
+            return existing
+
+        recorder_inst._ensure_worker()
+        return JobHandle(job_id, recorder_inst, entry.kind)
 
     wrapper.submit = _submit  # type: ignore[attr-defined]
 
@@ -423,8 +451,25 @@ def _build_data_json(
 
 
 # ---------------------------------------------------------------------------
-# Idempotency join
+# Idempotency join — notify primitive
 # ---------------------------------------------------------------------------
+#
+# The wait helpers below subscribe a Future via `Recorder._subscribe()` and
+# block on it. The brief calls this "wait-mechanism unification": the
+# primitive used by `JobHandle.wait()` is the same primitive that the
+# in-process idempotency-collision path uses.
+#
+# In-process: the writer of the terminal status calls `_resolve(job_id)`
+# inside `_mark_completed` / `_mark_failed`, firing every subscribed
+# Future. No polling occurs — `fut.result(timeout=...)` blocks the calling
+# thread; `asyncio.wait_for(asyncio.wrap_future(fut), ...)` blocks the
+# loop. Neither calls `time.sleep` or `asyncio.sleep`.
+#
+# Cross-process: the leader is in another process and never resolves our
+# local Future. The wait helpers detect this by looping with a short
+# `NOTIFY_POLL_INTERVAL_S` per-iteration timeout and rechecking row status
+# each cycle. If status is terminal, we break and resolve. If our deadline
+# passes, we raise `JoinTimeoutError`.
 
 
 _NO_JOIN = object()
@@ -436,27 +481,26 @@ def _try_join_existing(
     key: str,
     retry_failed: bool,
 ) -> Any:
-    """Pre-insert collision check.
+    """Pre-insert collision check (sync path).
 
     Returns `_NO_JOIN` to mean "no existing row, proceed with INSERT".
-    Otherwise returns the value the caller should receive.
+    Otherwise returns the joined caller's response, or raises
+    `JoinedSiblingFailedError` if the joined sibling terminated as failed
+    (per the wrap-transparency principle: keyed calls always either return
+    a response or raise; never return a `Job` for failure paths).
     """
     found = recorder_inst._lookup_active_by_kind_key(entry.kind, key)
     if found is None:
-        # No active row. If a prior row exists in `failed` and the caller
-        # opted out of retry, return that failed Job. Otherwise insert fresh.
         if not retry_failed:
             failed_id = recorder_inst._lookup_latest_failed(entry.kind, key)
             if failed_id is not None:
-                return recorder_inst.get(failed_id)
+                _raise_for_failed_sibling(recorder_inst, failed_id, entry, key)
         return _NO_JOIN
 
     job_id, status = found
     if status == _storage.STATUS_COMPLETED:
-        job = recorder_inst.get(job_id)
-        return job.response if job is not None else None
-    # pending or running: wait for terminal, then return its outcome.
-    return _wait_for_terminal(recorder_inst, job_id, entry, key)
+        return _response_for(recorder_inst, job_id)
+    return _wait_for_terminal_sync(recorder_inst, job_id, entry, key)
 
 
 def _wait_for_join(
@@ -465,99 +509,74 @@ def _wait_for_join(
     key: str | None,
     retry_failed: bool,
 ) -> Any:
-    """Reached after our INSERT lost the partial-unique-index race.
-
-    Behaves like `_try_join_existing` but never returns `_NO_JOIN` — by
-    definition something occupies the active slot.
-    """
+    """Reached after our INSERT lost the partial-unique-index race (sync)."""
     assert key is not None
     found = recorder_inst._lookup_active_by_kind_key(entry.kind, key)
     if found is None:
-        # Race window: the row that beat us was failed before our retry.
-        # Surface as a retry by raising — the caller (the wrapper) will
-        # see this as the call having no row and propagate. Practically
-        # this branch is only reachable if status flips fail+retry between
-        # our INSERT and our lookup; treat as not-found.
         if not retry_failed:
             failed_id = recorder_inst._lookup_latest_failed(entry.kind, key)
             if failed_id is not None:
-                return recorder_inst.get(failed_id)
-        # Fallback: re-raise IntegrityError indirectly via empty join.
+                _raise_for_failed_sibling(recorder_inst, failed_id, entry, key)
         raise IdempotencyRaceError(kind=entry.kind, key=key)
     job_id, status = found
     if status == _storage.STATUS_COMPLETED:
-        job = recorder_inst.get(job_id)
-        return job.response if job is not None else None
-    return _wait_for_terminal(recorder_inst, job_id, entry, key)
+        return _response_for(recorder_inst, job_id)
+    return _wait_for_terminal_sync(recorder_inst, job_id, entry, key)
 
 
-def _wait_for_terminal(
+def _wait_for_terminal_sync(
     recorder_inst: Recorder,
     job_id: str,
     entry: _registry.RegistryEntry,
     key: str | None,
 ) -> Any:
-    """Sync-poll a row until it reaches terminal state, then return.
+    """Subscribe + block until terminal, then resolve to response or raise.
 
-    Phase-2 will swap this for an in-process subscriber wakeup. The
-    polling cadence is small enough (5ms) that gathered tasks join
-    promptly without burning CPU.
+    No `time.sleep` — the Future resolves in-process the moment the
+    terminal write commits. Cross-process: the loop's per-iteration
+    timeout (`NOTIFY_POLL_INTERVAL_S`) doubles as the polling cadence;
+    we recheck row status when the wait ticks over.
     """
-    deadline = time.monotonic() + _POLL_TIMEOUT_S
+    fut = recorder_inst._subscribe(job_id)
+    try:
+        status = _await_terminal_sync(
+            recorder_inst, job_id, fut, entry, key, DEFAULT_JOIN_TIMEOUT_S
+        )
+    finally:
+        recorder_inst._unsubscribe(job_id, fut)
+    return _resolve_terminal(recorder_inst, job_id, entry, key, status)
+
+
+def _await_terminal_sync(
+    recorder_inst: Recorder,
+    job_id: str,
+    fut: concurrent.futures.Future,
+    entry: _registry.RegistryEntry,
+    key: str | None,
+    timeout_s: float,
+) -> str:
+    import time
+
+    deadline = time.monotonic() + timeout_s
     while True:
-        status = recorder_inst._row_status(job_id)
-        if status in _storage.TERMINAL_STATUSES:
-            break
-        if time.monotonic() > deadline:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
             raise JoinTimeoutError(
                 kind=entry.kind,
                 key=key,
                 sibling_job_id=job_id,
-                timeout_s=_POLL_TIMEOUT_S,
+                timeout_s=timeout_s,
             )
-        time.sleep(_POLL_INTERVAL_S)
-
-    return _resolve_terminal(recorder_inst, job_id, entry, key, status)
-
-
-def _resolve_terminal(
-    recorder_inst: Recorder,
-    job_id: str,
-    entry: _registry.RegistryEntry,
-    key: str | None,
-    status: str,
-) -> Any:
-    if status == _storage.STATUS_COMPLETED:
-        job = recorder_inst.get(job_id)
-        return job.response if job is not None else None
-    # status == failed
-    job = recorder_inst.get(job_id)
-    sibling_error = (
-        job.error if (job is not None and isinstance(job.error, dict)) else None
-    )
-    raise JoinedSiblingFailedError(
-        kind=entry.kind,
-        key=key or "",
-        sibling_job_id=job_id,
-        sibling_error=sibling_error,
-    )
-
-
-# ---------------------------------------------------------------------------
-# Async-aware join helpers
-# ---------------------------------------------------------------------------
-#
-# The sync versions above sleep on `time.sleep` inside the asyncio
-# threadpool. Under high concurrency (e.g. 50 gathered idempotent calls
-# all colliding on the same key) this exhausts the threadpool: the 49
-# pollers each pin a worker thread, leaving no slot for the winner's
-# `_mark_running` / HTTP / `_mark_completed` to_thread dispatches. The
-# winner deadlocks and every caller times out at 30 s.
-#
-# The fix: in the async wrapper, do the polling on the event loop with
-# `asyncio.sleep`, dispatching only the per-tick status check to a thread.
-# Threadpool occupancy stays at O(1) per joiner; the winner's writes
-# always have a free slot.
+        slice_s = min(remaining, NOTIFY_POLL_INTERVAL_S)
+        try:
+            return fut.result(timeout=slice_s)
+        except concurrent.futures.TimeoutError:
+            # Cross-process fallback: another process may be the leader.
+            # Recheck row status; if terminal, we missed the resolve (or
+            # there was no in-process resolve to miss).
+            status = recorder_inst._row_status(job_id)
+            if status in _storage.TERMINAL_STATUSES:
+                return status
 
 
 async def _async_wait_for_terminal(
@@ -566,22 +585,50 @@ async def _async_wait_for_terminal(
     entry: _registry.RegistryEntry,
     key: str | None,
 ) -> Any:
-    deadline = time.monotonic() + _POLL_TIMEOUT_S
+    """Async equivalent of `_wait_for_terminal_sync`."""
+    fut = recorder_inst._subscribe(job_id)
+    try:
+        status = await _await_terminal_async(
+            recorder_inst, job_id, fut, entry, key, DEFAULT_JOIN_TIMEOUT_S
+        )
+    finally:
+        recorder_inst._unsubscribe(job_id, fut)
+    return await asyncio.to_thread(
+        _resolve_terminal, recorder_inst, job_id, entry, key, status
+    )
+
+
+async def _await_terminal_async(
+    recorder_inst: Recorder,
+    job_id: str,
+    fut: concurrent.futures.Future,
+    entry: _registry.RegistryEntry,
+    key: str | None,
+    timeout_s: float,
+) -> str:
+    import time
+
+    deadline = time.monotonic() + timeout_s
     while True:
-        status = await asyncio.to_thread(recorder_inst._row_status, job_id)
-        if status in _storage.TERMINAL_STATUSES:
-            break
-        if time.monotonic() > deadline:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
             raise JoinTimeoutError(
                 kind=entry.kind,
                 key=key,
                 sibling_job_id=job_id,
-                timeout_s=_POLL_TIMEOUT_S,
+                timeout_s=timeout_s,
             )
-        await asyncio.sleep(_POLL_INTERVAL_S)
-    return await asyncio.to_thread(
-        _resolve_terminal, recorder_inst, job_id, entry, key, status
-    )
+        slice_s = min(remaining, NOTIFY_POLL_INTERVAL_S)
+        try:
+            return await asyncio.wait_for(
+                asyncio.shield(asyncio.wrap_future(fut)), timeout=slice_s
+            )
+        except asyncio.TimeoutError:
+            status = await asyncio.to_thread(
+                recorder_inst._row_status, job_id
+            )
+            if status in _storage.TERMINAL_STATUSES:
+                return status
 
 
 async def _async_try_join_existing(
@@ -599,13 +646,18 @@ async def _async_try_join_existing(
                 recorder_inst._lookup_latest_failed, entry.kind, key
             )
             if failed_id is not None:
-                return await asyncio.to_thread(recorder_inst.get, failed_id)
+                await asyncio.to_thread(
+                    _raise_for_failed_sibling,
+                    recorder_inst,
+                    failed_id,
+                    entry,
+                    key,
+                )
         return _NO_JOIN
 
     job_id, status = found
     if status == _storage.STATUS_COMPLETED:
-        job = await asyncio.to_thread(recorder_inst.get, job_id)
-        return job.response if job is not None else None
+        return await asyncio.to_thread(_response_for, recorder_inst, job_id)
     return await _async_wait_for_terminal(recorder_inst, job_id, entry, key)
 
 
@@ -625,10 +677,83 @@ async def _async_wait_for_join(
                 recorder_inst._lookup_latest_failed, entry.kind, key
             )
             if failed_id is not None:
-                return await asyncio.to_thread(recorder_inst.get, failed_id)
+                await asyncio.to_thread(
+                    _raise_for_failed_sibling,
+                    recorder_inst,
+                    failed_id,
+                    entry,
+                    key,
+                )
         raise IdempotencyRaceError(kind=entry.kind, key=key)
     job_id, status = found
     if status == _storage.STATUS_COMPLETED:
-        job = await asyncio.to_thread(recorder_inst.get, job_id)
-        return job.response if job is not None else None
+        return await asyncio.to_thread(_response_for, recorder_inst, job_id)
     return await _async_wait_for_terminal(recorder_inst, job_id, entry, key)
+
+
+# --- shared resolution helpers ---
+
+
+def _response_for(recorder_inst: Recorder, job_id: str) -> Any:
+    job = recorder_inst.get(job_id)
+    return job.response if job is not None else None
+
+
+def _resolve_terminal(
+    recorder_inst: Recorder,
+    job_id: str,
+    entry: _registry.RegistryEntry,
+    key: str | None,
+    status: str,
+) -> Any:
+    if status == _storage.STATUS_COMPLETED:
+        return _response_for(recorder_inst, job_id)
+    _raise_for_failed_sibling(recorder_inst, job_id, entry, key)
+
+
+def _try_join_handle(
+    recorder_inst: Recorder,
+    entry: _registry.RegistryEntry,
+    key: str | None,
+    retry_failed: bool,
+) -> Any:
+    """For `.submit(key=...)`: return a `JobHandle` over the existing
+    active row, or `None` if no active row exists and the caller should
+    INSERT fresh.
+
+    Mirrors `_try_join_existing` shape but returns a `JobHandle` instead
+    of awaiting terminal — the caller wants a handle, not a response.
+    Failed-row + `retry_failed=False`: returns a handle whose `.wait()`
+    will raise `JoinedSiblingFailedError` (per wrap-transparency).
+    """
+    from ._handle import JobHandle
+
+    if key is None:
+        return None
+    found = recorder_inst._lookup_active_by_kind_key(entry.kind, key)
+    if found is not None:
+        job_id, _status = found
+        return JobHandle(job_id, recorder_inst, entry.kind)
+    if not retry_failed:
+        failed_id = recorder_inst._lookup_latest_failed(entry.kind, key)
+        if failed_id is not None:
+            return JobHandle(failed_id, recorder_inst, entry.kind)
+    return None
+
+
+def _raise_for_failed_sibling(
+    recorder_inst: Recorder,
+    job_id: str,
+    entry: _registry.RegistryEntry,
+    key: str | None,
+) -> None:
+    job = recorder_inst.get(job_id)
+    sibling_error = (
+        job.error if (job is not None and isinstance(job.error, dict)) else None
+    )
+    raise JoinedSiblingFailedError(
+        kind=entry.kind,
+        key=key or "",
+        sibling_job_id=job_id,
+        sibling_error=sibling_error,
+    )

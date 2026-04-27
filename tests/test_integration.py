@@ -593,13 +593,20 @@ async def test_sync_from_inside_event_loop_raises(default_recorder, httpserver):
         place.sync({"qty": 1})
 
 
-# --- 13. .submit() raises NotImplementedError -----------------------------
+# --- 13. .submit() returns a JobHandle (Stream A.2 worker is wired) -------
 
 
-def test_submit_raises_not_implemented_with_phase2_message(default_recorder):
-    @recorder(kind="ext.broker.submit_stub")
+def test_submit_returns_job_handle_resolving_to_terminal_job(default_recorder):
+    """Phase 2 Stream A wired `.submit()` through the worker. Each
+    submit returns a JobHandle whose `wait_sync()` resolves to a Job."""
+    from recorded import JobHandle
+
+    @recorder(kind="ext.broker.submit_real")
     def fn(x):
-        return x
+        return {"echo": x}
 
-    with pytest.raises(NotImplementedError, match=r"phase 2"):
-        fn.submit(1)
+    handle = fn.submit(42)
+    assert isinstance(handle, JobHandle)
+    job = handle.wait_sync(timeout=5.0)
+    assert job.status == "completed"
+    assert job.response == {"echo": 42}

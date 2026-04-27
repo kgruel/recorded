@@ -159,13 +159,22 @@ async def test_idempotency_with_failed_retries_by_default(default_recorder):
     assert [r[0] for r in rows] == ["failed", "completed"]
 
 
-# --- failed + retry_failed=False: return existing failed Job --------------
+# --- failed + retry_failed=False: raise JoinedSiblingFailedError ----------
 
 
 @pytest.mark.asyncio
-async def test_idempotency_retry_failed_false_returns_failed_job(default_recorder):
-    """Named test: with `retry_failed=False`, a prior failure is returned
-    as a Job object rather than retried."""
+async def test_idempotency_retry_failed_false_raises_joined_sibling_failed(
+    default_recorder,
+):
+    """Named test: with `retry_failed=False`, a prior failure raises
+    `JoinedSiblingFailedError` rather than returning a `Job`.
+
+    Per the wrap-transparency principle: keyed call surfaces always
+    either return the response OR raise — never return a `Job`. To
+    inspect the prior failed row, use the read API
+    (`recorded.list(kind=..., status='failed', ...)`)."""
+    from recorded._errors import JoinedSiblingFailedError
+
     n = 0
 
     @recorder(kind="t.idem.no_retry")
@@ -177,13 +186,9 @@ async def test_idempotency_retry_failed_false_returns_failed_job(default_recorde
     with pytest.raises(ValueError):
         await flaky(key="k")
 
-    # Second call, retry_failed=False → returns the prior failed Job.
-    job = await flaky(key="k", retry_failed=False)
-
-    # Returned value is a Job (not the response), since there's no response.
-    from recorded import Job
-    assert isinstance(job, Job)
-    assert job.status == "failed"
-    assert job.error == {"type": "ValueError", "message": "boom"}
-    # And no second execution happened.
+    # Second call, retry_failed=False → raises with the sibling's error.
+    with pytest.raises(JoinedSiblingFailedError) as excinfo:
+        await flaky(key="k", retry_failed=False)
+    assert excinfo.value.sibling_error == {"type": "ValueError", "message": "boom"}
+    # No second execution happened.
     assert n == 1

@@ -53,14 +53,6 @@ COLUMNS = (
 
 SELECT_BY_ID = f"SELECT {', '.join(COLUMNS)} FROM jobs WHERE id = ?"
 
-# Used by recorded.last(); kind=None matches any.
-SELECT_LAST = f"""
-SELECT {', '.join(COLUMNS)} FROM jobs
-WHERE (? IS NULL OR kind GLOB ?)
-ORDER BY submitted_at DESC
-LIMIT ?
-"""
-
 INSERT_PENDING = """
 INSERT INTO jobs (id, kind, key, status, submitted_at, request_json)
 VALUES (?, ?, ?, 'pending', ?, ?)
@@ -82,17 +74,54 @@ UPDATE jobs
  WHERE id=? AND status IN ('pending', 'running')
 """
 
+# Atomic claim: pick the oldest pending row and flip it to running. The outer
+# `AND status='pending'` guard turns the UPDATE into a no-op if a competing
+# claimant already won, even across processes (WAL serializes the writes).
+CLAIM_ONE = f"""
+UPDATE jobs
+   SET status='running', started_at=?
+ WHERE id IN (SELECT id FROM jobs
+              WHERE status='pending'
+              ORDER BY submitted_at
+              LIMIT 1)
+   AND status='pending'
+RETURNING {', '.join(COLUMNS)}
+"""
+
+# Reaper: any row still `running` whose `started_at` predates the threshold
+# is presumed orphaned by a dead process. Conditional UPDATE with RETURNING
+# id so callers can resolve subscribers waiting on those ids.
+REAP_STUCK = """
+UPDATE jobs
+   SET status='failed',
+       completed_at=?,
+       error_json=json_object('type','orphaned','reason','process_died_while_running')
+ WHERE status='running'
+   AND started_at < ?
+RETURNING id
+"""
+
+
+def format_iso(dt: datetime) -> str:
+    """Render a datetime as our canonical ISO8601 form.
+
+    Naive datetimes are assumed UTC. Aware datetimes are converted.
+    Used by the read API to normalize `since=`/`until=` callers passing
+    a `datetime` rather than a pre-formatted string.
+    """
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    else:
+        dt = dt.astimezone(timezone.utc)
+    return dt.isoformat(timespec="microseconds").replace("+00:00", "Z")
+
 
 def now_iso() -> str:
     """Lex-sortable ISO8601 UTC, microsecond precision, `Z` suffix.
 
     Used for every timestamp we write.
     """
-    return (
-        datetime.now(timezone.utc)
-        .isoformat(timespec="microseconds")
-        .replace("+00:00", "Z")
-    )
+    return format_iso(datetime.now(timezone.utc))
 
 
 def new_id() -> str:

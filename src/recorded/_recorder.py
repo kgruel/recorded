@@ -1,40 +1,84 @@
-"""Recorder: owns a SQLite connection and the read methods.
+"""Recorder: owns a SQLite connection, the read API, lifecycle SQL, the
+wait-primitive notify registry, the stuck-row reaper, and the worker.
 
-Phase 1.1 ships a skeleton: connection management, schema bootstrap, the
-read methods (`get`, `last`), and a module-level lazy default. The write
-path (decorator-driven lifecycle) lands in phase 1.2.
+Phase 2 Stream A additions over phase 1:
+
+- `_subscribe`/`_resolve` notify primitive used by `JobHandle.wait()` and
+  the idempotency-join paths in `_decorator`. Replaces the 5 ms sync-poll.
+- Reaper: on Recorder construction, any `running` row whose `started_at`
+  predates `reaper_threshold_s` is flipped to `failed` and its subscribers
+  resolved.
+- Read API: `list()` (filtered iterator), public `connection()` alias of
+  `_connection()`, `last(status=...)` for symmetry.
+- Atomic-claim helper used by the worker.
+- Lazy worker lifecycle (start on first `.submit()`; cancelled and joined
+  on `shutdown()`).
 """
 
 from __future__ import annotations
 
+import concurrent.futures
+import fnmatch
 import json
 import sqlite3
 import threading
-from typing import Any
+from datetime import datetime, timedelta, timezone
+from typing import Any, Iterator
 
 from . import _registry, _storage
-from ._errors import RecorderClosedError
+from ._errors import ConfigurationError, RecorderClosedError
 from ._types import Job
+
+# Default join timeout for `JobHandle.wait()` / `wait_sync()`. Stream C
+# wires this through `recorded.configure(join_timeout_s=...)` and a per-call
+# argument; until then it's a module constant.
+DEFAULT_JOIN_TIMEOUT_S = 30.0
+
+# How often the wait helper rechecks `_row_status` while a future is pending.
+# Cross-process leaders never resolve our local future, so the recheck is
+# the cross-process polling fallback. In-process the future fires inside
+# the first `result(timeout=)` call and we never run a second iteration.
+NOTIFY_POLL_INTERVAL_S = 0.2
+
+# Default reaper threshold: 5 minutes. Configurable per-Recorder via the
+# `reaper_threshold_s=` keyword. Per-kind override is design-for-future.
+DEFAULT_REAPER_THRESHOLD_S = 5 * 60.0
 
 
 class Recorder:
-    """Owns a SQLite connection and exposes read/write primitives.
+    """Owns a SQLite connection and exposes read/write primitives."""
 
-    For phase 1.1 only the read methods are wired up. `_connection()`,
-    schema bootstrap and shutdown are present so 1.2 can plug in the
-    write lifecycle without restructuring.
-    """
-
-    def __init__(self, path: str = "./jobs.db") -> None:
+    def __init__(
+        self,
+        path: str = "./jobs.db",
+        *,
+        reaper_threshold_s: float = DEFAULT_REAPER_THRESHOLD_S,
+        worker_poll_interval_s: float = 0.2,
+    ) -> None:
         self.path = path
+        self.reaper_threshold_s = reaper_threshold_s
+        self.worker_poll_interval_s = worker_poll_interval_s
+
         self._lock = threading.Lock()
-        # Separate write lock: serialize SQL execution across helper threads
-        # (asyncio.to_thread + the test pool). The connection's internal lock
-        # is not enough — concurrent execute()s on one connection can race the
-        # cursor state and surface as `InterfaceError: bad parameter`.
+        # See PROGRESS_INTEGRATION §3.1: read paths must hold this through
+        # both execute and fetch to avoid stepping a cursor concurrently
+        # with another execute on the shared connection.
         self._write_lock = threading.Lock()
         self._conn: sqlite3.Connection | None = None
         self._closed = False
+
+        # Notify registry: job_id -> list of subscribed Futures. Resolved
+        # by `_resolve()` after a terminal SQL update commits.
+        self._notify_lock = threading.Lock()
+        self._notify_subscribers: dict[
+            str, list[concurrent.futures.Future]
+        ] = {}
+
+        # Worker is lazy. `_worker_lock` guards lazy start + shutdown.
+        # Imported lazily to keep the worker dependency optional during
+        # bare-call-only use.
+        self._worker_lock = threading.Lock()
+        self._worker: Any | None = None  # _worker.Worker; avoids circular import
 
     # ----- connection lifecycle -----
 
@@ -47,30 +91,35 @@ class Recorder:
             if self._conn is None:
                 self._conn = _storage.open_connection(self.path)
                 _storage.ensure_schema(self._conn)
+                self._reap_stuck_running_unlocked(self._conn)
             return self._conn
 
-    def _execute(self, sql: str, params: tuple = ()) -> sqlite3.Cursor:
-        """Serialize all execute() calls through `_write_lock`.
+    # Public alias of the connection accessor. DESIGN.md names
+    # `recorded.connection()` (and `Recorder.connection()`) as the escape
+    # hatch for raw SQL. `_connection` stays as a private alias since the
+    # phase-1 test suite reaches into it directly; touching those test
+    # sites is out of Stream A's scope.
+    def connection(self) -> sqlite3.Connection:
+        return self._connection()
 
-        Note: callers that *read* must use `_fetchone` / `_fetchall`
-        instead — pulling rows off the returned cursor after the lock has
-        been released races concurrent writers and surfaces (rarely) as
-        `IndexError` from a partially-stepped cursor.
-        """
+    def _execute(self, sql: str, params: tuple = ()) -> sqlite3.Cursor:
         conn = self._connection()
         with self._write_lock:
             return conn.execute(sql, params)
 
-    def _fetchone(self, sql: str, params: tuple = ()) -> tuple | None:
-        """Execute + fetchone, both inside `_write_lock`.
+    def _execute_count(self, sql: str, params: tuple = ()) -> int:
+        """Execute and return rowcount under the write lock.
 
-        Required for safety under `asyncio.to_thread` concurrency: the
-        sqlite3 cursor is bound to a shared connection; stepping it from
-        one thread while another thread starts a new execute() on the
-        same connection can return a malformed row. The unit suite never
-        triggered this; the 50-gathered idempotency test surfaced it
-        immediately.
+        Used for conditional UPDATEs whose follow-up action depends on
+        whether any row matched (e.g. notify-resolve only on real terminal
+        transitions).
         """
+        conn = self._connection()
+        with self._write_lock:
+            cur = conn.execute(sql, params)
+            return cur.rowcount
+
+    def _fetchone(self, sql: str, params: tuple = ()) -> tuple | None:
         conn = self._connection()
         with self._write_lock:
             return conn.execute(sql, params).fetchone()
@@ -82,6 +131,16 @@ class Recorder:
 
     def shutdown(self) -> None:
         """Idempotent: safe to call repeatedly."""
+        # Tear down the worker first (if any). Done outside `_lock` to
+        # avoid blocking an in-flight `_connection()` call from the worker
+        # loop while we wait for the thread to exit.
+        worker = None
+        with self._worker_lock:
+            worker = self._worker
+            self._worker = None
+        if worker is not None:
+            worker.shutdown()
+
         with self._lock:
             if self._closed:
                 return
@@ -91,7 +150,7 @@ class Recorder:
                 self._conn = None
 
     def __enter__(self) -> "Recorder":
-        self._connection()  # eager-bootstrap so errors surface at entry
+        self._connection()
         return self
 
     def __exit__(self, exc_type, exc, tb) -> None:
@@ -105,9 +164,94 @@ class Recorder:
             return None
         return _row_to_job(row)
 
-    def last(self, n: int = 10, *, kind: str | None = None) -> list[Job]:
-        rows = self._fetchall(_storage.SELECT_LAST, (kind, kind, n))
+    def last(
+        self,
+        n: int = 10,
+        *,
+        kind: str | None = None,
+        status: str | None = None,
+    ) -> list[Job]:
+        sql = (
+            f"SELECT {', '.join(_storage.COLUMNS)} FROM jobs "
+            "WHERE (? IS NULL OR kind GLOB ?) "
+            "  AND (? IS NULL OR status = ?) "
+            "ORDER BY submitted_at DESC "
+            "LIMIT ?"
+        )
+        rows = self._fetchall(sql, (kind, kind, status, status, n))
         return [_row_to_job(r) for r in rows]
+
+    def list(
+        self,
+        kind: str | None = None,
+        status: str | None = None,
+        key: str | None = None,
+        since: str | datetime | None = None,
+        until: str | datetime | None = None,
+        where_data: dict[str, Any] | None = None,
+        limit: int = 100,
+        order: str = "desc",
+    ) -> Iterator[Job]:
+        """Filtered iterator over jobs. Query is deferred until first `next()`.
+
+        `kind` accepts a glob (`broker.*`). `where_data` is equality on
+        top-level keys of `data_json` only — multiple keys AND together.
+        Anything richer goes through `connection()` and raw SQL.
+
+        The iterator buffers all matched rows internally on first `next()`
+        rather than streaming a live cursor: holding the cursor across
+        thread boundaries races concurrent writes (PROGRESS_INTEGRATION
+        §3.1). "Lazy" here means "query deferred", not "row-streamed".
+        """
+        order_norm = order.lower()
+        if order_norm not in ("asc", "desc"):
+            raise ConfigurationError(
+                f"list(order=...) must be 'asc' or 'desc', got {order!r}"
+            )
+
+        clauses: list[str] = []
+        params: list[Any] = []
+        if kind is not None:
+            clauses.append("kind GLOB ?")
+            params.append(kind)
+        if status is not None:
+            clauses.append("status = ?")
+            params.append(status)
+        if key is not None:
+            clauses.append("key = ?")
+            params.append(key)
+        if since is not None:
+            clauses.append("submitted_at >= ?")
+            params.append(_normalize_iso(since))
+        if until is not None:
+            clauses.append("submitted_at <= ?")
+            params.append(_normalize_iso(until))
+        if where_data:
+            for k, v in where_data.items():
+                if "." in k or "$" in k:
+                    raise ConfigurationError(
+                        f"where_data key {k!r} contains '.' or '$'; "
+                        "only top-level equality is supported. Use "
+                        "recorded.connection() for richer queries."
+                    )
+                clauses.append("json_extract(data_json, ?) = ?")
+                params.append(f"$.{k}")
+                params.append(v)
+
+        where_sql = (" WHERE " + " AND ".join(clauses)) if clauses else ""
+        sql = (
+            f"SELECT {', '.join(_storage.COLUMNS)} FROM jobs"
+            f"{where_sql} ORDER BY submitted_at {order_norm.upper()} LIMIT ?"
+        )
+        params.append(limit)
+
+        # Deferred-query generator: query fires on first `next()`.
+        def _gen() -> Iterator[Job]:
+            rows = self._fetchall(sql, tuple(params))
+            for r in rows:
+                yield _row_to_job(r)
+
+        return _gen()
 
     # ----- lifecycle writes -----
 
@@ -134,10 +278,12 @@ class Recorder:
         response_json: str | None,
         data_json: str | None,
     ) -> None:
-        self._execute(
+        rowcount = self._execute_count(
             _storage.UPDATE_COMPLETED,
             (completed_at, response_json, data_json, job_id),
         )
+        if rowcount > 0:
+            self._resolve(job_id, _storage.STATUS_COMPLETED)
 
     def _mark_failed(
         self,
@@ -145,9 +291,20 @@ class Recorder:
         completed_at: str,
         error_json: str | None,
     ) -> None:
-        self._execute(
+        rowcount = self._execute_count(
             _storage.UPDATE_FAILED, (completed_at, error_json, job_id)
         )
+        if rowcount > 0:
+            self._resolve(job_id, _storage.STATUS_FAILED)
+
+    def _claim_one(self) -> tuple | None:
+        """Atomic pending → running transition; returns the claimed row."""
+        conn = self._connection()
+        with self._write_lock:
+            row = conn.execute(
+                _storage.CLAIM_ONE, (_storage.now_iso(),)
+            ).fetchone()
+        return row
 
     def _row_status(self, job_id: str) -> str | None:
         row = self._fetchone("SELECT status FROM jobs WHERE id = ?", (job_id,))
@@ -156,11 +313,6 @@ class Recorder:
     def _lookup_active_by_kind_key(
         self, kind: str, key: str
     ) -> tuple[str, str] | None:
-        """(id, status) of the active row for (kind, key), or None.
-
-        Active = pending/running/completed (the partial-unique-index set).
-        Used by the idempotency-collision branch.
-        """
         row = self._fetchone(
             "SELECT id, status FROM jobs "
             "WHERE kind=? AND key=? AND status IN ('pending','running','completed')",
@@ -180,12 +332,6 @@ class Recorder:
         return None if row is None else row[0]
 
     def _flush_attach(self, job_id: str, key: str, value: Any) -> None:
-        """Write-through path for `attach(..., flush=True)`.
-
-        Merges a single key into `data_json` via `json_patch`, creating
-        the object if currently NULL. Used only when `flush=True` is
-        passed; the default buffered path writes once at completion.
-        """
         payload = json.dumps({key: value})
         self._execute(
             "UPDATE jobs "
@@ -193,6 +339,118 @@ class Recorder:
             "WHERE id = ?",
             (payload, job_id),
         )
+
+    # ----- notify primitive -----
+
+    def _subscribe(self, job_id: str) -> concurrent.futures.Future:
+        """Register a Future that resolves to the terminal status of `job_id`.
+
+        If the row is already terminal at subscription time, the future is
+        pre-resolved before return — callers never need a special "is it
+        already done?" check.
+
+        Race-safety: the future is registered under `_notify_lock` BEFORE
+        the status check so a concurrent writer's `_resolve` call either
+        (a) sees us in the subscriber list and resolves us, or (b) wrote
+        terminal and committed before our status check, in which case our
+        status check finds it.
+        """
+        fut: concurrent.futures.Future = concurrent.futures.Future()
+        with self._notify_lock:
+            self._notify_subscribers.setdefault(job_id, []).append(fut)
+
+        # Now check status. If already terminal, resolve inline and detach
+        # ourselves from the subscriber list so a later `_resolve` doesn't
+        # re-set (which would no-op anyway, but the cleanup is cheap).
+        status = self._row_status(job_id)
+        if status in _storage.TERMINAL_STATUSES:
+            with self._notify_lock:
+                lst = self._notify_subscribers.get(job_id)
+                if lst is not None:
+                    try:
+                        lst.remove(fut)
+                    except ValueError:
+                        pass
+                    if not lst:
+                        self._notify_subscribers.pop(job_id, None)
+            if not fut.done():
+                fut.set_result(status)
+        return fut
+
+    def _unsubscribe(
+        self, job_id: str, fut: concurrent.futures.Future
+    ) -> None:
+        with self._notify_lock:
+            lst = self._notify_subscribers.get(job_id)
+            if lst is None:
+                return
+            try:
+                lst.remove(fut)
+            except ValueError:
+                pass
+            if not lst:
+                self._notify_subscribers.pop(job_id, None)
+
+    def _resolve(self, job_id: str, status: str) -> None:
+        """Notify all subscribers waiting on `job_id` of its terminal status.
+
+        Must be called only after the terminal SQL UPDATE commits — the
+        callers (`_mark_completed`, `_mark_failed`, the reaper) gate on
+        `cursor.rowcount > 0` so a no-op UPDATE (e.g. a late completion
+        for a reaped row) doesn't double-resolve subscribers that another
+        writer already handled.
+        """
+        with self._notify_lock:
+            lst = self._notify_subscribers.pop(job_id, [])
+        for fut in lst:
+            if not fut.done():
+                fut.set_result(status)
+
+    # ----- reaper -----
+
+    def _reap_stuck_running_unlocked(self, conn: sqlite3.Connection) -> None:
+        """Flip orphaned `running` rows to `failed` on Recorder construction.
+
+        Called from `_connection()` immediately after `ensure_schema()`,
+        with `self._lock` held. Not gated by `_write_lock` because no
+        other thread can hold a connection reference yet — the lazy
+        connection has only just been created.
+        """
+        threshold_iso = _storage.format_iso(
+            datetime.now(timezone.utc)
+            - timedelta(seconds=self.reaper_threshold_s)
+        )
+        rows = conn.execute(
+            _storage.REAP_STUCK, (_storage.now_iso(), threshold_iso)
+        ).fetchall()
+        for (job_id,) in rows:
+            self._resolve(job_id, _storage.STATUS_FAILED)
+
+    # ----- worker accessors (used by _decorator) -----
+
+    def _ensure_worker(self) -> Any:
+        with self._worker_lock:
+            if self._closed:
+                raise RecorderClosedError(
+                    f"Recorder({self.path!r}) has been shut down."
+                )
+            if self._worker is None:
+                # Lazy import to keep the worker module unloaded for
+                # bare-call-only code paths.
+                from . import _worker
+
+                self._worker = _worker.Worker(self)
+                self._worker.start()
+            return self._worker
+
+
+# ----- helpers -----
+
+
+def _normalize_iso(value: str | datetime) -> str:
+    if isinstance(value, str):
+        return value
+    return _storage.format_iso(value)
 
 
 # ----- module-level default singleton -----
@@ -210,7 +468,6 @@ def get_default() -> Recorder:
 
 
 def _set_default(r: Recorder | None) -> None:
-    """Test hook: replace the module-level default Recorder."""
     global _default
     with _default_lock:
         if _default is not None and _default is not r:

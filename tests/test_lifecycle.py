@@ -201,13 +201,19 @@ def test_multi_arg_request_captured_as_envelope(default_recorder):
     assert json.loads(raw) == {"args": [1, 2], "kwargs": {"label": "hi"}}
 
 
-# --- submit raises NotImplementedError -------------------------------------
+# --- submit returns a JobHandle (Stream A.2 worker is wired) --------------
 
 
-def test_submit_raises_with_phase2_message(default_recorder):
+def test_submit_returns_handle(default_recorder):
+    """Phase 2 Stream A.2 wired `.submit` through the worker."""
+    from recorded import JobHandle
+
     @recorder(kind="t.submit")
     def f(x):
         return x
 
-    with pytest.raises(NotImplementedError, match="phase 2"):
-        f.submit(1)
+    h = f.submit(1)
+    assert isinstance(h, JobHandle)
+    job = h.wait_sync(timeout=5.0)
+    assert job.status == "completed"
+    assert job.response == 1
