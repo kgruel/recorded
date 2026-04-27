@@ -22,9 +22,11 @@ import json
 from dataclasses import is_dataclass
 from typing import TYPE_CHECKING, Any
 
+import asyncio
+
 from . import _registry, _storage
-from ._context import _UNSET, current_job
-from ._errors import ConfigurationError
+from ._context import _UNSET, JobContext, current_job
+from ._errors import ConfigurationError, SerializationError
 
 if TYPE_CHECKING:
     from ._recorder import Recorder
@@ -230,6 +232,93 @@ def _build_data_json(
     if not merged:
         return None
     return json.dumps(merged)
+
+
+def _run_and_record(
+    recorder_inst: "Recorder",
+    entry: _registry.RegistryEntry,
+    job_id: str,
+    invoke: Any,  # 0-arg callable returning the wrapped fn's result
+) -> Any:
+    """Set context, invoke `invoke()`, record outcome, re-raise on failure.
+
+    Sync variant. Used by the bare-call sync wrapper.
+    """
+    ctx = JobContext(job_id=job_id, kind=entry.kind, recorder=recorder_inst)
+    token = current_job.set(ctx)
+    try:
+        try:
+            result = invoke()
+        except Exception as exc:
+            recorder_inst._mark_failed(
+                job_id, _storage.now_iso(), _serialize_error(entry, exc)
+            )
+            raise
+        try:
+            _write_completion(recorder_inst, entry, job_id, result, ctx.buffer)
+        except Exception as exc:
+            recorder_inst._mark_failed(
+                job_id, _storage.now_iso(), _serialize_recording_failure(exc)
+            )
+            raise SerializationError(
+                f"recorder failed to serialize response from "
+                f"{entry.kind}: {exc}",
+                slot="response",
+                value=result,
+            ) from exc
+        return result
+    finally:
+        current_job.reset(token)
+
+
+async def _run_and_record_async(
+    recorder_inst: "Recorder",
+    entry: _registry.RegistryEntry,
+    job_id: str,
+    invoke: Any,  # 0-arg callable returning an awaitable of the fn's result
+) -> Any:
+    """Async variant of `_run_and_record`. Used by the bare-call async
+    wrapper and the worker.
+
+    `invoke` is a 0-arg callable returning a coroutine (or any awaitable).
+    SQL writes go through `asyncio.to_thread` so they don't block the loop.
+
+    `CancelledError` (BaseException, not Exception) is not caught — it
+    propagates so the caller's task-cancellation protocol stays intact.
+    """
+    ctx = JobContext(job_id=job_id, kind=entry.kind, recorder=recorder_inst)
+    token = current_job.set(ctx)
+    try:
+        try:
+            result = await invoke()
+        except Exception as exc:
+            await asyncio.to_thread(
+                recorder_inst._mark_failed,
+                job_id,
+                _storage.now_iso(),
+                _serialize_error(entry, exc),
+            )
+            raise
+        try:
+            await asyncio.to_thread(
+                _write_completion, recorder_inst, entry, job_id, result, ctx.buffer
+            )
+        except Exception as exc:
+            await asyncio.to_thread(
+                recorder_inst._mark_failed,
+                job_id,
+                _storage.now_iso(),
+                _serialize_recording_failure(exc),
+            )
+            raise SerializationError(
+                f"recorder failed to serialize response from "
+                f"{entry.kind}: {exc}",
+                slot="response",
+                value=result,
+            ) from exc
+        return result
+    finally:
+        current_job.reset(token)
 
 
 def _project_response(kind: str, model: type, response: Any) -> dict[str, Any]:

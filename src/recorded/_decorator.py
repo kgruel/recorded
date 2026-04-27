@@ -25,25 +25,19 @@ from typing import Any, Callable
 
 from . import _registry, _storage
 from ._adapter import Adapter
-from ._context import JobContext, current_job
 from ._errors import (
     ConfigurationError,
     IdempotencyRaceError,
     JoinedSiblingFailedError,
     JoinTimeoutError,
-    SerializationError,
     SyncInLoopError,
 )
 from ._lifecycle import (
-    _build_data_json,
     _capture_request,
-    _project_response,
-    _serialize_error,
-    _serialize_recording_failure,
+    _run_and_record,
+    _run_and_record_async,
     _serialize_request,
     _validate_call_args,
-    _write_completion,
-    make_error_json,
 )
 from ._recorder import (
     NOTIFY_POLL_INTERVAL_S,
@@ -150,48 +144,10 @@ def _build_async_wrapper(
                 recorder_inst, entry, key, retry_failed
             )
 
-        ctx = JobContext(job_id=job_id, kind=entry.kind, recorder=recorder_inst)
-        token = current_job.set(ctx)
-        try:
-            try:
-                result = await fn(*args, **kwargs)
-            except Exception as exc:
-                await asyncio.to_thread(
-                    recorder_inst._mark_failed,
-                    job_id,
-                    _storage.now_iso(),
-                    _serialize_error(entry, exc),
-                )
-                raise
-            try:
-                await asyncio.to_thread(
-                    _write_completion,
-                    recorder_inst,
-                    entry,
-                    job_id,
-                    result,
-                    ctx.buffer,
-                )
-            except Exception as exc:
-                # Wrapped function succeeded, but we can't record its result
-                # (e.g. response is not JSON-serializable). Mark the row failed
-                # rather than leak it as `running`; phase-2 reaper would
-                # recover it but we don't have one yet.
-                await asyncio.to_thread(
-                    recorder_inst._mark_failed,
-                    job_id,
-                    _storage.now_iso(),
-                    _serialize_recording_failure(exc),
-                )
-                raise SerializationError(
-                    f"recorder failed to serialize response from "
-                    f"{fn.__qualname__}: {exc}",
-                    slot="response",
-                    value=result,
-                ) from exc
-            return result
-        finally:
-            current_job.reset(token)
+        async def _invoke() -> Any:
+            return await fn(*args, **kwargs)
+
+        return await _run_and_record_async(recorder_inst, entry, job_id, _invoke)
 
     _attach_call_modes(async_wrapper, fn, entry, is_async=True)
     return async_wrapper
@@ -228,32 +184,9 @@ def _build_sync_wrapper(
         except sqlite3.IntegrityError:
             return _wait_for_join(recorder_inst, entry, key, retry_failed)
 
-        ctx = JobContext(job_id=job_id, kind=entry.kind, recorder=recorder_inst)
-        token = current_job.set(ctx)
-        try:
-            try:
-                result = fn(*args, **kwargs)
-            except Exception as exc:
-                recorder_inst._mark_failed(
-                    job_id, _storage.now_iso(), _serialize_error(entry, exc)
-                )
-                raise
-            try:
-                _write_completion(recorder_inst, entry, job_id, result, ctx.buffer)
-            except Exception as exc:
-                # See async_wrapper: avoid stuck-running on unrecordable response.
-                recorder_inst._mark_failed(
-                    job_id, _storage.now_iso(), _serialize_recording_failure(exc)
-                )
-                raise SerializationError(
-                    f"recorder failed to serialize response from "
-                    f"{fn.__qualname__}: {exc}",
-                    slot="response",
-                    value=result,
-                ) from exc
-            return result
-        finally:
-            current_job.reset(token)
+        return _run_and_record(
+            recorder_inst, entry, job_id, lambda: fn(*args, **kwargs)
+        )
 
     _attach_call_modes(sync_wrapper, fn, entry, is_async=False)
     return sync_wrapper

@@ -25,7 +25,6 @@ import threading
 from typing import TYPE_CHECKING
 
 from . import _registry, _storage
-from ._context import JobContext, current_job
 from ._lifecycle import make_error_json
 
 if TYPE_CHECKING:
@@ -134,12 +133,16 @@ class Worker:
     # ----- per-job execution -----
 
     async def _execute(self, row: tuple) -> None:
-        """Run the wrapped function for one claimed row."""
-        from ._lifecycle import (
-            _serialize_error,
-            _serialize_recording_failure,
-            _write_completion,
-        )
+        """Run the wrapped function for one claimed row.
+
+        Delegates context-set + invoke + record-outcome to
+        `_run_and_record_async`. The worker's only added job is to map
+        cancellation (worker-shutdown) onto the cancel marker, and to
+        swallow recorded exceptions (the bare-call path re-raises them
+        to the user; the worker has no caller, so they're done once
+        recorded).
+        """
+        from ._lifecycle import _run_and_record_async
 
         (
             job_id,
@@ -171,63 +174,36 @@ class Worker:
             )
             return
 
-        # Set the contextvar inside this task BEFORE any await, so async
-        # functions and `to_thread` calls both see `current_job`.
-        ctx = JobContext(
-            job_id=job_id, kind=kind, recorder=self.recorder
-        )
-        token = current_job.set(ctx)
-        cancelled = False
-        try:
-            request = entry.request.deserialize(_loads(request_json))
-            try:
-                if inspect.iscoroutinefunction(entry.fn):
-                    result = await entry.fn(request)
-                else:
-                    result = await asyncio.to_thread(entry.fn, request)
-            except asyncio.CancelledError:
-                cancelled = True
-                raise
-            except Exception as exc:
-                await asyncio.to_thread(
-                    self.recorder._mark_failed,
-                    job_id,
-                    _storage.now_iso(),
-                    _serialize_error(entry, exc),
-                )
-                return
+        request = entry.request.deserialize(_loads(request_json))
 
+        if inspect.iscoroutinefunction(entry.fn):
+            async def _invoke():
+                return await entry.fn(request)
+        else:
+            async def _invoke():
+                return await asyncio.to_thread(entry.fn, request)
+
+        try:
+            await _run_and_record_async(
+                self.recorder, entry, job_id, _invoke
+            )
+        except asyncio.CancelledError:
+            # Worker shutdown cancelled this task. The recording layer
+            # didn't write a terminal row (CancelledError bypasses its
+            # except-Exception). Synchronous mark so the write commits
+            # before CancelledError unwinds further.
             try:
-                await asyncio.to_thread(
-                    _write_completion,
-                    self.recorder,
-                    entry,
-                    job_id,
-                    result,
-                    ctx.buffer,
+                self.recorder._mark_failed(
+                    job_id, _storage.now_iso(), _CANCEL_ERROR_JSON
                 )
-            except Exception as exc:
-                # Mirror the bare-call path: an unrecordable response
-                # marks the row failed rather than leaks it.
-                await asyncio.to_thread(
-                    self.recorder._mark_failed,
-                    job_id,
-                    _storage.now_iso(),
-                    _serialize_recording_failure(exc),
-                )
-        finally:
-            current_job.reset(token)
-            if cancelled:
-                # Synchronous mark inside the finally so the failure write
-                # commits before CancelledError unwinds the task. Calling
-                # the recorder method directly is safe — it serializes
-                # through `_write_lock` like every other writer.
-                try:
-                    self.recorder._mark_failed(
-                        job_id, _storage.now_iso(), _CANCEL_ERROR_JSON
-                    )
-                except Exception:
-                    pass
+            except Exception:
+                pass
+            raise
+        except Exception:
+            # Already recorded as failed by _run_and_record_async (either
+            # the wrapped fn raised, or recording itself failed). The
+            # worker has no caller to propagate to — swallow.
+            return
 
     # ----- shutdown -----
 
