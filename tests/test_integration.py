@@ -25,7 +25,7 @@ from werkzeug.wrappers import Response
 
 from recorded import Recorder, attach, get, last, recorder
 from recorded import _recorder as _recorder_mod
-from recorded._errors import SerializationError, SyncInLoopError
+from recorded._errors import SyncInLoopError
 
 
 # --- helpers --------------------------------------------------------------
@@ -469,12 +469,14 @@ async def test_query_real_recorded_data(default_recorder, httpserver):
 
 
 @pytest.mark.asyncio
-async def test_unrecordable_response_under_load_marks_failed_and_raises_serialization(
-    default_recorder, httpserver
+async def test_unrecordable_response_under_load_marks_failed_and_returns_result(
+    default_recorder, httpserver, caplog
 ):
     """50 concurrent calls; each wrapped fn returns a non-JSON-serializable
-    object after a real HTTP roundtrip. Every caller sees SerializationError
-    (not the underlying TypeError); every row ends `failed`."""
+    object after a real HTTP roundtrip. Wrap-transparency: every caller
+    receives the natural return value (not an exception); every row ends
+    `failed`; warnings are emitted to the `recorded` logger."""
+    import logging
 
     httpserver.expect_request("/x").respond_with_json({"ok": True})
 
@@ -488,10 +490,17 @@ async def test_unrecordable_response_under_load_marks_failed_and_raises_serializ
         return _NotSerializable()  # unrecordable
 
     async def caller(i):
-        with pytest.raises(SerializationError):
-            await place({"i": i})
+        result = await place({"i": i})
+        assert isinstance(result, _NotSerializable)
 
-    await asyncio.gather(*(caller(i) for i in range(50)))
+    with caplog.at_level(logging.WARNING, logger="recorded"):
+        await asyncio.gather(*(caller(i) for i in range(50)))
+
+    # Warnings emitted for the recording failures.
+    assert sum(
+        1 for r in caplog.records
+        if r.name == "recorded" and "failed to serialize" in r.message
+    ) == 50
 
     rows = (
         default_recorder._connection()

@@ -121,12 +121,16 @@ def test_bare_call_returns_wrapped_functions_natural_value_sync(default_recorder
     assert returner() == [1, 2, "three"]
 
 
-def test_unrecordable_response_marks_row_failed_and_reraises(default_recorder):
-    """If the recorder can't serialize the response, mark the row failed
-    rather than leaking it as `running`. The caller sees a SerializationError
-    (chained from the underlying TypeError) so they know the recorder, not
-    the function, was the problem."""
-    from recorded._errors import SerializationError
+def test_unrecordable_response_marks_row_failed_and_returns_result(
+    default_recorder, caplog
+):
+    """Wrap-transparency: when the wrapped function returns successfully,
+    the decorated callable returns that value — even if recording it
+    fails. The bare function would never raise on a recording failure,
+    so the decorated callable can't either. The row is marked failed
+    (recording integrity) and a warning is emitted via the `recorded`
+    logger (visibility), but the return is preserved."""
+    import logging
 
     sentinel = object()
 
@@ -134,13 +138,22 @@ def test_unrecordable_response_marks_row_failed_and_reraises(default_recorder):
     def returner():
         return sentinel
 
-    with pytest.raises(SerializationError):
-        returner()
+    with caplog.at_level(logging.WARNING, logger="recorded"):
+        result = returner()
+
+    assert result is sentinel  # return value preserved
 
     row = default_recorder._connection().execute(
         "SELECT status, error_json FROM jobs WHERE kind=?", ("t.unrecordable",)
     ).fetchone()
     assert row[0] == "failed"
+
+    # Warning emitted so the recording failure is visible in logs.
+    assert any(
+        "failed to serialize response" in r.message
+        for r in caplog.records
+        if r.name == "recorded"
+    )
 
 
 # --- audit invariant: typed-instance returns without `response=Model` ------

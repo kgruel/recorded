@@ -46,7 +46,21 @@ DEFAULT_REAPER_THRESHOLD_S = 5 * 60.0
 
 
 class Recorder:
-    """Owns a SQLite connection and exposes read/write primitives."""
+    """Owns a SQLite connection and exposes read/write primitives.
+
+    Direct construction (`Recorder(path=...)`) does NOT register
+    `atexit.register(self.shutdown)` — only `recorded.configure(...)` does.
+    Test fixtures and explicit-instance code paths construct dozens of
+    Recorders; auto-registering each would leak `atexit` callbacks for the
+    interpreter's lifetime. If you build a Recorder directly outside a
+    `with` block, you are responsible for calling `shutdown()` (or using
+    `with` / `async with`) before the interpreter exits — otherwise the
+    worker thread can race against interpreter teardown.
+
+    Use `recorded.configure(path=...)` for the managed-singleton pattern;
+    use `with Recorder(path=...) as r:` (or `async with`) for explicit
+    instances.
+    """
 
     def __init__(
         self,

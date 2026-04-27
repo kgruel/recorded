@@ -17,16 +17,18 @@ Contents:
 
 from __future__ import annotations
 
+import asyncio
 import dataclasses
 import json
+import logging
 from dataclasses import is_dataclass
 from typing import TYPE_CHECKING, Any
 
-import asyncio
-
 from . import _registry, _storage
 from ._context import _UNSET, JobContext, current_job
-from ._errors import ConfigurationError, SerializationError
+from ._errors import ConfigurationError
+
+_logger = logging.getLogger("recorded")
 
 if TYPE_CHECKING:
     from ._recorder import Recorder
@@ -157,10 +159,21 @@ def _serialize_error(entry: _registry.RegistryEntry, exc: BaseException) -> str:
     if ctx is not None and ctx.error_buffer is not _UNSET:
         try:
             return json.dumps(entry.error.serialize(ctx.error_buffer))
-        except Exception:
+        except Exception as adapter_exc:
             # Fall through to {type, message} of the *original* exc rather
             # than masking the underlying failure. Caller still sees `exc`.
-            pass
+            # Log the adapter failure so the silent fallback is visible —
+            # raising would itself violate wrap-transparency by replacing
+            # the user's exception with one the bare function couldn't
+            # produce.
+            _logger.warning(
+                "recorded[%s]: error=Model adapter rejected attach_error "
+                "payload (%s); recording fell back to {type, message} of "
+                "the original exception. Fix the attached payload to match "
+                "the registered model.",
+                entry.kind,
+                adapter_exc,
+            )
     return make_error_json(type(exc).__name__, str(exc))
 
 
@@ -249,9 +262,15 @@ def _run_and_record(
     key: str | None,
     invoke: Any,  # 0-arg callable returning the wrapped fn's result
 ) -> Any:
-    """Set context, invoke `invoke()`, record outcome, re-raise on failure.
+    """Set context, invoke `invoke()`, record outcome, return the result.
 
     Sync variant. Used by the bare-call sync wrapper.
+
+    Wrap-transparency: when the wrapped function returns successfully,
+    this function returns that value — even if the recorder fails to
+    serialize it. The bare function would never raise on a recording
+    failure, so the decorated callable can't either. Recording failures
+    mark the row failed and emit a warning via `recorded` logger.
     """
     ctx = JobContext(job_id=job_id, kind=entry.kind, recorder=recorder_inst)
     token = current_job.set(ctx)
@@ -269,12 +288,12 @@ def _run_and_record(
             recorder_inst._mark_failed(
                 job_id, _storage.now_iso(), _serialize_recording_failure(exc)
             )
-            raise SerializationError(
-                f"recorder failed to serialize response from "
-                f"{entry.kind}: {exc}",
-                slot="response",
-                value=result,
-            ) from exc
+            _logger.warning(
+                "recorded[%s]: failed to serialize response from %s: %s. "
+                "Row %s marked failed; the wrapped function's return value "
+                "is propagated to the caller.",
+                entry.kind, entry.kind, exc, job_id,
+            )
         return result
     finally:
         current_job.reset(token)
@@ -292,6 +311,10 @@ async def _run_and_record_async(
 
     `invoke` is a 0-arg callable returning a coroutine (or any awaitable).
     SQL writes go through `asyncio.to_thread` so they don't block the loop.
+
+    Wrap-transparency: see `_run_and_record`. Recording failures on the
+    success path are logged but do not propagate as exceptions — the
+    bare function would have returned the value too.
 
     `CancelledError` (BaseException, not Exception) is not caught — it
     propagates so the caller's task-cancellation protocol stays intact.
@@ -320,12 +343,12 @@ async def _run_and_record_async(
                 _storage.now_iso(),
                 _serialize_recording_failure(exc),
             )
-            raise SerializationError(
-                f"recorder failed to serialize response from "
-                f"{entry.kind}: {exc}",
-                slot="response",
-                value=result,
-            ) from exc
+            _logger.warning(
+                "recorded[%s]: failed to serialize response from %s: %s. "
+                "Row %s marked failed; the wrapped function's return value "
+                "is propagated to the caller.",
+                entry.kind, entry.kind, exc, job_id,
+            )
         return result
     finally:
         current_job.reset(token)
