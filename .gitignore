@@ -3,6 +3,8 @@ __pycache__/
 *.pyo
 .pytest_cache/
 .hypothesis/
+.ruff_cache/
+.tox/
 .venv/
 venv/
 *.egg-info/

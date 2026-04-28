@@ -28,6 +28,12 @@ classifiers = [
 ]
 dependencies = []
 
+[project.urls]
+Homepage = "https://github.com/kgruel/recorded"
+Repository = "https://github.com/kgruel/recorded"
+Issues = "https://github.com/kgruel/recorded/issues"
+Changelog = "https://github.com/kgruel/recorded/blob/main/CHANGELOG.md"
+
 [project.optional-dependencies]
 pydantic = ["pydantic>=2"]
 fastapi = ["pydantic>=2", "fastapi>=0.110"]
@@ -75,6 +81,7 @@ exclude = [
     ".hypothesis",
     ".pytest_cache",
     ".ruff_cache",
+    ".tox",
     ".coverage",
     ".git",
     ".gitignore",
