@@ -35,6 +35,35 @@ dev = [
 [tool.hatch.build.targets.wheel]
 packages = ["src/recorded"]
 
+[tool.hatch.build.targets.sdist]
+# Trim to "what a packager or reproducer needs": src/, tests/, docs/,
+# README.md, LICENSE, pyproject.toml. Tests in sdist let downstream
+# packagers (Debian, conda) run the suite. Excluded: working notes
+# (CLAUDE.md, HANDOFF.md), the lockfile (uv-specific), CI/automation
+# scaffolding (.github/, scripts/), and any local-tool scratch dirs
+# (predict/, debug/, .subtask/, .hypothesis/, etc.). Hatchling
+# normally drops gitignored paths automatically, but git-worktree
+# checkouts don't always advertise themselves as a repo to hatchling
+# — the explicit exclude list keeps the sdist deterministic across
+# regular clones and worktrees.
+exclude = [
+    "CLAUDE.md",
+    "HANDOFF.md",
+    "uv.lock",
+    ".github",
+    "scripts",
+    "predict",
+    "debug",
+    ".subtask",
+    ".hypothesis",
+    ".pytest_cache",
+    ".ruff_cache",
+    ".coverage",
+    ".git",
+    ".gitignore",
+    ".git-blame-ignore-revs",
+]
+
 [tool.pytest.ini_options]
 asyncio_mode = "strict"
 testpaths = ["tests"]

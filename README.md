@@ -4,6 +4,14 @@
 args, return value, exceptions, duration. Inspect later with the read API,
 the CLI, or any tool that talks to a SQLite file.
 
+> **Privacy:** `recorded` writes function arguments, return values, and
+> exceptions to SQLite verbatim. The DB at `jobs.db` becomes a durable
+> record of everything wrapped — including any secrets the function
+> handled. Use [`recorded.fastapi.capture_request(redact_headers=...)`](docs/usage/fastapi.md)
+> for HTTP request capture; for general functions, redact sensitive
+> arguments yourself before they cross the decorator boundary. See
+> [configuration](docs/usage/configuration.md) for redaction options.
+
 ```python
 from recorded import recorder, last
 
@@ -15,12 +23,15 @@ place_order("AAPL", 100)            # runs as normal — but recorded
 print(last(1)[0].response)          # {'order_id': 'ord-9281', ...}
 ```
 
+Need leader-process durability or fire-and-wait handles? See
+[Advanced: durable submission](#advanced-durable-submission-via-leader-process).
+
 The library is small by design. A four-slot row, a three-write lifecycle,
-and a transparent decorator — that's the spine. Idempotency keys,
-cross-process `.submit()`, typed projections, and FastAPI integration all
-layer on without changing the bare-call shape: removing `@recorder`
-doesn't change return-type or exception-type shape, only the side effect
-goes away.
+and a transparent decorator — that's the spine. Idempotency keys, typed
+projections, queryable data slots, FastAPI integration, and cross-process
+`.submit()` all layer on without changing the bare-call shape: removing
+`@recorder` doesn't change return-type or exception-type shape, only the
+side effect goes away.
 
 ---
 
@@ -32,11 +43,6 @@ goes away.
 - **Idempotency keys.** Pass `key="..."` and the second call is free.
   Same key in another process? It joins the in-flight work and returns
   the same response.
-- **Cross-process submission.** `.submit()` enqueues a job that a
-  separate leader process (`python -m recorded run`) executes;
-  `JobHandle.wait()` blocks for completion. Crashed leaders get
-  reaped automatically. Misconfigured deployments fail loudly on the
-  first submit (`ConfigurationError`) rather than silently degrading.
 - **Typed slots.** Pydantic v2 or `@dataclass`, duck-typed (never
   imported). Validates on the way in, rehydrates typed objects on the
   way out.
@@ -45,6 +51,10 @@ goes away.
   Anything richer drops to `recorded.connection()` and raw SQL.
 - **CLI + LLM-ready prompts.** `python -m recorded last/get/tail`, plus
   `Job.to_prompt()` for pasting a row back into a model as context.
+- **Optional cross-process submission.** `.submit()` enqueues a job that
+  a separate leader process executes; `JobHandle.wait()` blocks for
+  completion. Opt-in tier — bare-call paths are leader-free. See
+  [Advanced: durable submission](#advanced-durable-submission-via-leader-process).
 
 ## What it isn't
 
@@ -79,24 +89,6 @@ Failed jobs retry by default; `retry_failed=False` raises
 
 > Deeper: [usage/idempotency.md](docs/usage/idempotency.md).
 
-## Background work — `.submit()` and `JobHandle.wait()`
-
-```python
-handle = build_report.submit(spec, key="daily-2026-04-27")
-
-job = handle.wait_sync(timeout=60.0)        # from sync code
-job = await handle.wait(timeout=60.0)       # from async code
-```
-
-`.submit()` enqueues a `pending` row and returns a handle; a separate
-leader process (`python -m recorded run --import myapp.tasks`) claims
-and executes the row. The reaper sweeps orphaned `running` rows on
-connection bootstrap so a crashed leader doesn't leave idempotency keys
-held forever. `recorder.is_leader_running()` is the deployment health
-check.
-
-> Deeper: [usage/workers.md](docs/usage/workers.md).
-
 ## Queryable projections — `data=Model` + `recorded.query(...)`
 
 ```python
@@ -118,6 +110,31 @@ you'll grep on.
 
 > Deeper: [usage/typed-slots.md](docs/usage/typed-slots.md).
 
+## Advanced: durable submission via leader process
+
+Most users won't need this. The bare `@recorder` path above runs in the
+caller's process, records the row, and returns — no extra infrastructure.
+`.submit()` is the opt-in tier for "fire here, run there, wait or come
+back later for the result":
+
+```python
+handle = build_report.submit(spec, key="daily-2026-04-27")
+
+job = handle.wait_sync(timeout=60.0)        # from sync code
+job = await handle.wait(timeout=60.0)       # from async code
+```
+
+`.submit()` enqueues a `pending` row and returns a handle; a separate
+**leader process** (`python -m recorded run --import myapp.tasks`) claims
+and executes the row. Without a leader running, `.submit()` raises
+`ConfigurationError` rather than silently degrading; misconfigured
+deployments fail loudly on the first submit. The reaper sweeps orphaned
+`running` rows on the next leader-process bootstrap, so a crashed leader
+doesn't leave idempotency keys held forever.
+`recorder.is_leader_running()` is the deployment health check.
+
+> Deeper: [usage/workers.md](docs/usage/workers.md).
+
 ---
 
 ## Where to read next
@@ -131,10 +148,10 @@ skip to the one you need.
 | [usage/configuration.md](docs/usage/configuration.md) | `configure()`, lifecycles, multi-recorder safety |
 | [usage/reading.md](docs/usage/reading.md) | `last`, `get`, `query`, `connection`, the CLI |
 | [usage/idempotency.md](docs/usage/idempotency.md) | `key=`, `retry_failed`, the partial-unique-index trick |
-| [usage/workers.md](docs/usage/workers.md) | `.submit()`, the leader process, the reaper |
 | [usage/typed-slots.md](docs/usage/typed-slots.md) | the four slots, `attach()`, `attach_error()` |
-| [usage/fastapi.md](docs/usage/fastapi.md) | lifespan integration, `capture_request`, two-shape pattern |
 | [usage/queries.md](docs/usage/queries.md) | `recorded.query(...)`, raw SQL, `Job.to_prompt()` |
+| [usage/fastapi.md](docs/usage/fastapi.md) | lifespan integration, `capture_request`, two-shape pattern |
+| [usage/workers.md](docs/usage/workers.md) | `.submit()`, the leader process, the reaper |
 | [usage/errors.md](docs/usage/errors.md) | exception hierarchy, what to catch where |
 
 Or jump in by need — see the [usage guide index](docs/usage/README.md).

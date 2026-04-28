@@ -301,8 +301,8 @@ removing `@recorder` shouldn't require deleting `attach()` calls. (See
 
 ## The reaper
 
-A defensive sweep for orphaned `running` rows. Runs on
-`Recorder._connection()` first-init (i.e., first SQLite touch after
+A bootstrap startup sweep for orphaned `running` rows. Runs **once**,
+on `Recorder._connection()` first-init (i.e., first SQLite touch after
 construction):
 
 ```sql
@@ -317,6 +317,14 @@ Default threshold 5 minutes, configurable per-Recorder. Conditional
 UPDATE means at-most-once-per-row regardless of who wins across
 processes — multiple recorders booting against the same DB don't
 double-reap.
+
+The reaper is **not** a continuous background thread. A long-lived
+process won't sweep orphans created after its own startup; cleanup of
+those orphans waits for the next `Recorder()` construction —
+typically the next leader-process start. In production deployments
+that means "rows orphaned by a prior leader crash get cleaned up the
+next time the leader process boots." This is the bootstrap-sweep
+semantic; design accordingly if you need tighter recovery.
 
 Late completion against a reaped row: the original writer's
 `UPDATE ... WHERE status='running'` no longer matches (status is now

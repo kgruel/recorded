@@ -69,6 +69,13 @@ class Adapter(ABC):
     `attach()` consults this to refuse undeclared keys at the call site
     against typed `data=` slots — declared keys are exactly the keys
     the rehydration path can reach.
+
+    The adapter itself is slot-agnostic: it does not know which audit
+    role (request/response/data/error) it has been mounted under.
+    Call sites that already know the slot annotate `SerializationError`
+    with `slot=` when re-raising — the adapter would otherwise need
+    every construction site threading a slot literal through, for an
+    attribute that's only meaningful at user-reachable raise sites.
     """
 
     model: type | None
@@ -130,6 +137,37 @@ class _PydanticAdapter(Adapter):
         # ty doesn't complain about `model_fields` not being on bare
         # `type` — same dodge as `model_validate` / `model_dump` below.
         self.field_names = frozenset(self.model.model_fields.keys())
+
+        # Round-trip safety: a model with field aliases under default
+        # Pydantic config writes canonical names via `model_dump()` but
+        # demands aliases at `model_validate()`. Rows would write
+        # successfully then fail to rehydrate — exactly the asymmetry
+        # the typed-slot contract is meant to refuse.
+        # (`self.model` for the same `type[Any]` reason as above.)
+        aliased_fields = [
+            name for name, info in self.model.model_fields.items() if info.alias is not None
+        ]
+        if aliased_fields:
+            config = getattr(self.model, "model_config", {})
+            if isinstance(config, dict):
+                populate_by_name = config.get("populate_by_name", False)
+                # Pydantic v2.11+ also exposes `validate_by_name` as an
+                # opt-in to accept canonical names; either is sufficient
+                # to make round-trip safe.
+                validate_by_name = config.get("validate_by_name", False)
+            else:
+                populate_by_name = getattr(config, "populate_by_name", False)
+                validate_by_name = getattr(config, "validate_by_name", False)
+            if not (populate_by_name or validate_by_name):
+                raise ConfigurationError(
+                    f"{self.model.__name__} declares field aliases "
+                    f"({aliased_fields!r}) without populate_by_name=True. "
+                    "With default Pydantic config, model_dump() writes "
+                    "canonical field names but model_validate() expects "
+                    "aliases — rows would be unreadable. Set "
+                    "model_config = ConfigDict(populate_by_name=True), "
+                    "or remove the field aliases."
+                )
 
     def serialize(self, value: Any) -> Any:
         if value is None:

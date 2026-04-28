@@ -240,6 +240,120 @@ def test_query_rejects_invalid_order(recorder: Recorder):
         list(recorder.query(order="random"))
 
 
+# ----- where_data null/bool coercion -----
+
+
+@pytest.mark.asyncio
+async def test_where_data_none_matches_json_null(default_recorder):
+    """`where_data={"flag": None}` matches rows where the JSON value is
+    explicitly `null`. Plain `=` against a SQL NULL never matches; this
+    requires `IS NULL` semantics."""
+    from recorded import attach
+
+    @recorder(kind="t.where.null")
+    async def fn(payload):
+        attach("flag", payload["flag"])
+        return {"ok": True}
+
+    await fn({"flag": None})
+    await fn({"flag": "set"})
+
+    rows = list(recorded.query(kind="t.where.null", where_data={"flag": None}))
+    assert len(rows) == 1
+    assert rows[0].data["flag"] is None
+
+
+@pytest.mark.asyncio
+async def test_where_data_none_matches_missing_key(default_recorder):
+    """`where_data={"missing": None}` matches rows where the key is absent
+    from `data_json` — `json_extract` returns SQL NULL for both JSON null
+    and missing keys, and the predicate has to match either."""
+    from recorded import attach
+
+    @recorder(kind="t.where.missing")
+    async def fn(set_key: bool):
+        if set_key:
+            attach("flag", "set")
+        return {"ok": True}
+
+    await fn(False)  # missing key
+    await fn(True)  # present key
+
+    rows = list(recorded.query(kind="t.where.missing", where_data={"flag": None}))
+    assert len(rows) == 1
+
+
+@pytest.mark.asyncio
+async def test_where_data_true_does_not_match_int_1(default_recorder):
+    """`where_data={"v": True}` must not match rows with JSON number 1.
+    Without the `json(?)` wrap, Python's `True` binds as int 1 and
+    `json_extract(...) = 1` matches both JSON true and JSON 1."""
+    from recorded import attach
+
+    @recorder(kind="t.where.bool_int")
+    async def fn(v):
+        attach("v", v)
+        return {"ok": True}
+
+    await fn(True)
+    await fn(1)
+
+    rows = list(recorded.query(kind="t.where.bool_int", where_data={"v": True}))
+    assert len(rows) == 1
+    assert rows[0].data["v"] is True
+
+
+@pytest.mark.asyncio
+async def test_where_data_false_does_not_match_int_0(default_recorder):
+    from recorded import attach
+
+    @recorder(kind="t.where.bool_int_false")
+    async def fn(v):
+        attach("v", v)
+        return {"ok": True}
+
+    await fn(False)
+    await fn(0)
+
+    rows = list(recorded.query(kind="t.where.bool_int_false", where_data={"v": False}))
+    assert len(rows) == 1
+    assert rows[0].data["v"] is False
+
+
+@pytest.mark.asyncio
+async def test_where_data_true_matches_json_true(default_recorder):
+    from recorded import attach
+
+    @recorder(kind="t.where.true")
+    async def fn(v):
+        attach("v", v)
+        return {"ok": True}
+
+    await fn(True)
+    await fn(False)
+
+    rows = list(recorded.query(kind="t.where.true", where_data={"v": True}))
+    assert len(rows) == 1
+    assert rows[0].data["v"] is True
+
+
+@pytest.mark.asyncio
+async def test_where_data_false_matches_json_false(default_recorder):
+    from recorded import attach
+
+    @recorder(kind="t.where.false")
+    async def fn(v):
+        attach("v", v)
+        return {"ok": True}
+
+    await fn(True)
+    await fn(False)
+
+    rows = list(recorded.query(kind="t.where.false", where_data={"v": False}))
+    assert len(rows) == 1
+    assert rows[0].data["v"] is False
+
+
 @pytest.mark.asyncio
 async def test_recorded_query_filters_by_idempotency_key(default_recorder):
     """Named test: `query(key='kk')` returns only rows with that idempotency

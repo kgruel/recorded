@@ -24,7 +24,7 @@ from typing import TYPE_CHECKING, Any
 
 from . import _registry, _storage
 from ._context import _UNSET, JobContext, current_job
-from ._errors import ConfigurationError
+from ._errors import ConfigurationError, SerializationError
 
 _logger = logging.getLogger("recorded")
 
@@ -124,9 +124,18 @@ def _capture_request(args: tuple[Any, ...], kwargs: dict[str, Any]) -> Any:
 
 
 def _serialize_request(entry: _registry.RegistryEntry, captured: Any) -> str | None:
+    """Serialize captured request before any DB write — raises propagate
+    to the caller (no row is written, the wrapped function is not run),
+    so `SerializationError` here is annotated with `slot="request"` so
+    callers can branch on which slot rejected the input.
+    """
     if captured is None:
         return None
-    serialized = entry.request.serialize(captured)
+    try:
+        serialized = entry.request.serialize(captured)
+    except SerializationError as exc:
+        exc.slot = "request"
+        raise
     return json.dumps(serialized)
 
 

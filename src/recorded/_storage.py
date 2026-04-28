@@ -54,6 +54,8 @@ CREATE TABLE IF NOT EXISTS jobs (
 
 CREATE INDEX IF NOT EXISTS idx_jobs_status_kind     ON jobs(status, kind);
 CREATE INDEX IF NOT EXISTS idx_jobs_kind_submitted  ON jobs(kind, submitted_at);
+-- supports bare `last()` and `query()` ordered by submitted_at without a kind filter
+CREATE INDEX IF NOT EXISTS idx_jobs_submitted_at    ON jobs(submitted_at DESC);
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_jobs_key_active
   ON jobs(kind, key)

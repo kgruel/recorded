@@ -27,7 +27,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from . import _registry, _storage
-from ._errors import ConfigurationError, RecorderClosedError
+from ._errors import ConfigurationError, RecorderClosedError, SerializationError
 from ._types import Job, _parse_iso
 
 _logger = logging.getLogger("recorded")
@@ -321,9 +321,29 @@ class Recorder:
                         "only top-level equality is supported. Use "
                         "recorded.connection() for richer queries."
                     )
-                clauses.append("json_extract(data_json, ?) = ?")
-                params.append(f"$.{k}")
-                params.append(v)
+                # `bool` must be checked before the general numeric
+                # path: in Python `bool` is a subclass of `int`, so a
+                # plain `= ?` bind would coerce True/False into 1/0.
+                # `json_extract` returns SQL int 1/0 for JSON true/false
+                # *and* for JSON 1/0 — indistinguishable at the SQL
+                # level. `json_type` *does* distinguish them, so route
+                # bools through that to keep `True` matching only JSON
+                # `true` (not int 1) and `False` only JSON `false`
+                # (not int 0).
+                if v is None:
+                    # `IS NULL` matches both JSON `null` and a missing
+                    # key — `json_extract` cannot distinguish them, and
+                    # "where field is null" reasonably means either.
+                    clauses.append("json_extract(data_json, ?) IS NULL")
+                    params.append(f"$.{k}")
+                elif isinstance(v, bool):
+                    clauses.append("json_type(data_json, ?) = ?")
+                    params.append(f"$.{k}")
+                    params.append("true" if v else "false")
+                else:
+                    clauses.append("json_extract(data_json, ?) = ?")
+                    params.append(f"$.{k}")
+                    params.append(v)
 
         where_sql = (" WHERE " + " AND ".join(clauses)) if clauses else ""
         sql = (
@@ -784,9 +804,9 @@ def _row_to_job(row: tuple[Any, ...]) -> Job:
         submitted_at=submitted_at,
         started_at=started_at,
         completed_at=completed_at,
-        request=entry.request.deserialize(_loads(request_json)),
-        response=entry.response.deserialize(_loads(response_json)),
-        data=entry.data.deserialize(_loads(data_json)),
+        request=_deserialize_with_slot(entry.request, _loads(request_json), "request"),
+        response=_deserialize_with_slot(entry.response, _loads(response_json), "response"),
+        data=_deserialize_with_slot(entry.data, _loads(data_json), "data"),
         # Errors may have been recorded under the default `{type, message}`
         # fallback shape even when `error=Model` is registered (e.g. the
         # wrapped function never called `attach_error()`, or its payload
@@ -794,6 +814,34 @@ def _row_to_job(row: tuple[Any, ...]) -> Job:
         # fall back to the raw dict.
         error=_safe_deserialize(entry.error, _loads(error_json)),
     )
+
+
+def _deserialize_with_slot(adapter: Any, raw: Any, slot: str) -> Any:
+    """Rehydrate a slot value, converting raw adapter rejections into
+    `SerializationError(slot=...)` so the read-API caller sees a uniform
+    library exception with the slot identified, regardless of which
+    adapter (dataclass `TypeError`, pydantic `ValidationError`) rejected
+    the stored value.
+
+    The error slot stays under `_safe_deserialize` (raw-dict fallback)
+    rather than this path: errors recorded via the `{type, message}`
+    fallback wouldn't satisfy a typed `error=Model`, and that's expected
+    behavior the read API absorbs silently.
+    """
+    try:
+        return adapter.deserialize(raw)
+    except SerializationError as exc:
+        exc.slot = slot
+        raise
+    except Exception as exc:
+        model = getattr(adapter, "model", None)
+        model_name = model.__name__ if model is not None else "?"
+        raise SerializationError(
+            f"Cannot rehydrate {slot}_json into {model_name}: {exc}",
+            slot=slot,
+            model=model,
+            value=raw,
+        ) from exc
 
 
 def _safe_deserialize(adapter: Any, raw: Any) -> Any:

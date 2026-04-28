@@ -87,30 +87,65 @@ the end.
 
 ### `SerializationError`
 
-A value couldn't be serialized into a typed slot. Two reasons:
+A value couldn't be moved through a typed slot. The contract is
+mechanical: pre-call request serialization/validation **can** raise
+to the caller; post-success response/data persistence failures are
+recorded on the row and do **not** raise.
 
-- A value passed to a typed slot doesn't satisfy the registered model.
-  E.g., decorator declares `response=OrderReply` but the function
-  returned a dict missing required fields.
-- The function's return value is not JSON-serializable and not auto-
-  renderable (not a dataclass, not Pydantic).
+| `slot`     | When it occurs                                       | Caller can catch?           | Where to inspect                                              |
+|------------|------------------------------------------------------|-----------------------------|---------------------------------------------------------------|
+| `request`  | Pre-call validation against `request=Model`          | Yes — at the call site      | The exception itself                                          |
+| `response` | Post-success serialization of the return value       | No                          | Job row (`status=failed`); logged via the `recorded` logger   |
+| `data`     | Post-success projection / `data_json` write          | No                          | Job row (`status=failed`); logged via the `recorded` logger   |
+| `request`  | Deserialization on read (`recorded.last/get/query`)  | Yes — at the read call site | The exception itself                                          |
+| `response` | Deserialization on read                              | Yes — at the read call site | The exception itself                                          |
+| `data`     | Deserialization on read                              | Yes — at the read call site | The exception itself                                          |
 
-Carries `slot=`, `model=`, `value=` attributes for diagnosis:
+The rule behind the table: post-success serialization failures don't
+propagate to the caller because wrap-transparency requires the
+recorded variant of the function not to raise an exception class the
+bare function couldn't have produced. The library marks the row
+failed and logs the failure so you can find it after the fact, but
+the wrapped function's natural return value still reaches the caller.
+
+The `error` slot has no row in the table because errors are written
+through a `{type, message}` fallback when the typed `error=Model`
+adapter rejects the payload — that fallback is the documented behavior,
+not a slot rejection. Read-side rehydration of `error_json` falls back
+to a raw dict if the stored shape can't validate, so it doesn't raise
+either.
+
+#### Pre-call request validation
 
 ```python
 try:
-    reply = place_order(req)
+    reply = place_order({"customer_id": 7})  # missing required field
 except recorded.SerializationError as e:
-    print(e.slot)    # "response"
-    print(e.model)   # OrderReply
+    print(e.slot)    # "request"
+    print(e.model)   # OrderReq
     print(e.value)   # the offending dict
 ```
 
-The bare-call path (without `key=`) treats post-success serialization
-failures as a side-channel signal: the row is marked failed, a warning is
-logged on the `recorded` logger, and the wrapped function's natural value
-is still returned to the caller. Wrap-transparency requires bare-call
-surfaces never raise an exception class the wrapped function wouldn't.
+#### Read-API deserialization
+
+```python
+try:
+    job = recorded.get(job_id)
+except recorded.SerializationError as e:
+    # The stored shape no longer matches the current registered model
+    # for this kind — typically a schema change against existing rows.
+    print(e.slot)    # "data" / "response" / "request"
+    print(e.model)   # the registered class
+    print(e.value)   # the raw stored dict that wouldn't validate
+```
+
+`SerializationError` carries `slot`, `model`, and `value` attributes
+for diagnosis. `slot` names the audit role that rejected the value;
+`model` is the registered class; `value` is what was passed in
+(call-site path) or what was stored (read-API path). `try/except
+SerializationError` around a call site won't fire for `slot="response"`
+or `slot="data"` post-success failures — those land on the row, not
+on the caller.
 
 ### `JoinedSiblingFailedError`
 

@@ -288,6 +288,16 @@ produce. The data-slot rule and the error-slot rule are both
 consequences of the same principle; their mechanics differ because
 the slots' write semantics differ.
 
+**Round-trip safety as a contract precondition.** A schema that can't
+round-trip itself — write canonical, read aliased — would let rows
+commit successfully then fail to rehydrate. That asymmetry is the
+exact failure mode the typed-slot contract exists to refuse. The
+adapter rejects an aliased Pydantic model without
+`populate_by_name=True` at decorator evaluation, before any call runs;
+same dissolution shape as the typed-data attach contract — the schema
+is the contract, and a self-incompatible schema is a configuration
+error to surface eagerly rather than absorb at read time.
+
 ### Joiner symmetry
 
 **All joiners — same-process and cross-process — rehydrate response
@@ -441,10 +451,17 @@ Recorder, either:
 
 ## Reaper
 
-**Defensive sweep on connection bootstrap.** Stuck `running` rows is
-the single most common source of "this library feels broken" reports
-for systems like this. ~10 lines of conditional UPDATE makes it
-disappear.
+**Bootstrap startup sweep — runs once on `Recorder()` construction
+(at the first SQLite touch).** Stuck `running` rows is the single
+most common source of "this library feels broken" reports for systems
+like this. ~10 lines of conditional UPDATE on bootstrap makes the
+class of report disappear.
+
+The reaper is **not** a continuous background loop. A long-lived
+process won't sweep orphans created after its own startup; that
+cleanup runs the next time a `Recorder` is constructed — typically
+the next leader-process start. In a deployment with one persistent
+leader, "the next reaper sweep" means "the next leader restart."
 
 Default threshold 5 minutes. The conditional UPDATE means
 at-most-once-per-row regardless of who wins across processes —

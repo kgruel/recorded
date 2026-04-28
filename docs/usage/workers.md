@@ -157,9 +157,9 @@ re-claims a fresh slot, and emits a dual-channel `RecordedWarning`
 
 ## The reaper
 
-A defensive sweep for orphaned `running` rows. Runs on
-`Recorder._connection()` first-init — i.e., the first SQLite touch after
-the recorder is constructed.
+A bootstrap startup sweep for orphaned `running` rows. Runs **once**,
+on `Recorder._connection()` first-init — i.e., the first SQLite touch
+after the recorder is constructed.
 
 ```sql
 UPDATE jobs SET status='failed',
@@ -175,11 +175,20 @@ Default threshold: 5 minutes (`DEFAULT_REAPER_THRESHOLD_S`). Configure via:
 recorded.configure(reaper_threshold_s=600.0)  # 10 minutes
 ```
 
+The reaper is **not** continuous. A long-lived process won't sweep
+orphans created *after* its own startup; cleanup of those orphans
+runs the next time a `Recorder()` is constructed (typically the next
+leader-process start). In production this usually means "orphans from
+a prior leader crash get cleaned up the next time the leader boots."
+If you need tighter recovery, restart the leader (or any process
+holding a `Recorder`) on a cadence that bounds your tolerance for
+stuck rows.
+
 Why it exists: if a leader process crashes mid-run, its `running` row is
 orphaned. Without the reaper, the partial unique index treats it as still
 holding the `(kind, key)` slot — new keyed calls would join it forever.
-The reaper flips it to `failed`, releasing the slot. Dead leader heartbeat
-rows get cleaned up the same way.
+The reaper flips it to `failed` on the next startup, releasing the slot.
+Dead leader heartbeat rows get cleaned up the same way.
 
 The reaper is multi-process safe. The conditional `WHERE status='running'`
 ensures at-most-once-per-row even if multiple recorders boot against the

@@ -234,6 +234,28 @@ and `model_validate` reads back). Attaching by alias raises — the alias
 key would land in `data_json` at a position the rehydration path cannot
 reach.
 
+The contract goes further: an aliased Pydantic model under default
+config is **refused at decorator evaluation**, surfacing the
+misconfig before any call runs. Reason: by default, `model_dump()`
+writes canonical names but `model_validate()` only accepts aliases —
+rows commit successfully then fail to rehydrate on `recorded.last()`.
+That's exactly the asymmetry the typed-slot contract exists to
+prevent. Configure the model to accept canonical names:
+
+```python
+from pydantic import BaseModel, ConfigDict, Field
+
+class OrderView(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+    customer_id: int = Field(alias="customer")
+    total_cents: int
+```
+
+Without `populate_by_name=True`, decorating with `data=OrderView`
+raises `ConfigurationError` immediately — no row gets written. With
+it, attach/dump/validate all agree on canonical names and the slot
+round-trips cleanly.
+
 **Why fail at the call site rather than at write time:** a typed
 `data=Model` row whose `data_json` contains undeclared keys is unreadable
 through the public read API — `_DataclassAdapter.deserialize` and

@@ -29,7 +29,7 @@ for job in recorded.query(
 | parameter | type | meaning |
 |---|---|---|
 | `kind` | `str \| None` | SQLite GLOB pattern (`*`, `?`). `None` = all kinds. |
-| `status` | `str \| None` | exact match: `"pending"`, `"running"`, `"completed"`, `"failed"`. |
+| `status` | `str \| Sequence[str] \| None` | one of `"pending"` / `"running"` / `"completed"` / `"failed"`, or a tuple/list of them (compiled as `IN (...)`). |
 | `key` | `str \| None` | exact match on idempotency key. |
 | `since` | `str \| datetime \| None` | filter by `submitted_at >= since`. |
 | `until` | `str \| datetime \| None` | filter by `submitted_at <= until`. |
