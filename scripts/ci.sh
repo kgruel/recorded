@@ -8,6 +8,9 @@ cd "$(dirname "$0")/.."
 
 step() { printf '\n\033[1;34m==> %s\033[0m\n' "$*"; }
 
+step "uv sync (with dev extras)"
+uv sync --extra dev
+
 step "ruff check"
 uv run ruff check src tests
 
