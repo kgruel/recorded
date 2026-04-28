@@ -1,0 +1,57 @@
+name: publish
+
+on:
+  push:
+    tags: ["v*"]
+
+jobs:
+  build:
+    name: build sdist + wheel
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+        with:
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+
+      - name: Verify tag matches pyproject version
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          pkg=$(uv run --no-project python -c "import tomllib,pathlib;print(tomllib.loads(pathlib.Path('pyproject.toml').read_text())['project']['version'])")
+          if [ "$tag" != "$pkg" ]; then
+            echo "tag $GITHUB_REF_NAME does not match pyproject version $pkg" >&2
+            exit 1
+          fi
+
+      - name: Run scripts/ci.sh (gate before publish)
+        run: scripts/ci.sh
+
+      - name: Build
+        run: uv build
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+  publish:
+    name: publish to PyPI
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/p/recorded
+    permissions:
+      id-token: write       # OIDC trusted publishing
+      attestations: write   # Sigstore attestations
+      contents: read
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+      - uses: pypa/gh-action-pypi-publish@release/v1
