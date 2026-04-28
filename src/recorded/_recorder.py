@@ -24,7 +24,7 @@ import logging
 import sqlite3
 import threading
 import weakref
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
@@ -253,7 +253,7 @@ class Recorder:
     def list(
         self,
         kind: str | None = None,
-        status: str | tuple[str, ...] | list[str] | None = None,
+        status: str | Sequence[str] | None = None,
         key: str | None = None,
         since: str | datetime | None = None,
         until: str | datetime | None = None,
