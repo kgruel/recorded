@@ -4,7 +4,7 @@ Notable changes per release. Project follows [Semantic Versioning](https://semve
 
 ## [Unreleased]
 
-## [0.1.0] — Initial release
+## [0.1.0] — 2026-04-28 — Initial release
 
 First public release. The library records function calls to SQLite as a typed audit / idempotency log. Bare `@recorder` is the tier-1 surface; `.submit()` plus a separate leader process is the advanced tier.
 

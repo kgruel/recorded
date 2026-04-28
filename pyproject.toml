@@ -68,7 +68,9 @@ packages = ["src/recorded"]
 # normally drops gitignored paths automatically, but git-worktree
 # checkouts don't always advertise themselves as a repo to hatchling
 # — the explicit exclude list keeps the sdist deterministic across
-# regular clones and worktrees.
+# regular clones and worktrees. Caveat: hatchling force-includes
+# `.gitignore` as a VCS hint regardless of the exclude list, so it
+# ships in the sdist; benign (29 lines of dev-environment patterns).
 exclude = [
     "CLAUDE.md",
     "HANDOFF.md",
