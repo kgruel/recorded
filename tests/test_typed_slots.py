@@ -83,3 +83,49 @@ def test_pydantic_unaliased_model_passes_validation_unchanged(default_recorder):
     job = recorded.last(1, kind="t.alias.plain")[0]
     assert isinstance(job.data, Plain)
     assert job.data.x == 7
+
+
+def test_pydantic_validation_alias_without_populate_by_name_raises_at_decorator(
+    default_recorder,
+):
+    """`Field(validation_alias=...)` alone (without `alias=...`) leaves
+    `info.alias is None` but still makes `model_validate()` reject
+    canonical-name input. The guard must catch it the same way it
+    catches `alias=...`."""
+
+    class ValidationAliased(BaseModel):
+        canonical_name: str = Field(validation_alias="aliased_name")
+
+    with pytest.raises(ConfigurationError, match="populate_by_name"):
+
+        @recorder(kind="t.alias.validation.bad", data=ValidationAliased)
+        def fn(req):
+            return {"canonical_name": req}
+
+
+def test_pydantic_serialization_alias_does_not_corrupt_storage(default_recorder):
+    """`Field(serialization_alias=...)` plus
+    `model_config(serialize_by_alias=True)` would normally cause
+    `model_dump()` to emit aliased keys, breaking the canonical-shape
+    contract. The adapter forces `by_alias=False` on dump everywhere it
+    serializes Pydantic values, so the stored shape stays canonical and
+    the matching `model_validate` on read can rehydrate it."""
+
+    class SerAliased(BaseModel):
+        model_config = ConfigDict(serialize_by_alias=True)
+        canonical_name: str = Field(serialization_alias="aliased_name")
+
+    @recorder(kind="t.alias.ser.ok", response=SerAliased, data=SerAliased)
+    def fn(req):
+        return SerAliased(canonical_name=req)
+
+    fn("value-x")
+
+    job = recorded.last(1, kind="t.alias.ser.ok")[0]
+    # response slot rehydrated cleanly: stored shape was canonical,
+    # not the aliased keys `serialize_by_alias=True` would have emitted.
+    assert isinstance(job.response, SerAliased)
+    assert job.response.canonical_name == "value-x"
+    # data slot's projection of the response also stayed canonical.
+    assert isinstance(job.data, SerAliased)
+    assert job.data.canonical_name == "value-x"

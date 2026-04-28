@@ -52,7 +52,10 @@ def _to_native(value: Any) -> Any:
     cover the realistic case.
     """
     if hasattr(value, "model_dump") and callable(value.model_dump):
-        return value.model_dump(mode="json")
+        # `by_alias=False` neutralizes `serialization_alias` /
+        # `serialize_by_alias=True`: stored shape stays canonical so
+        # the matching `model_validate` path can read it back.
+        return value.model_dump(mode="json", by_alias=False)
     if dataclasses.is_dataclass(value) and not isinstance(value, type):
         return dataclasses.asdict(value)
     return value
@@ -143,9 +146,21 @@ class _PydanticAdapter(Adapter):
         # demands aliases at `model_validate()`. Rows would write
         # successfully then fail to rehydrate — exactly the asymmetry
         # the typed-slot contract is meant to refuse.
+        #
+        # Pydantic v2 has three independently-settable alias concepts:
+        # `Field(alias=...)` sets `info.alias` (and both
+        # validation/serialization aliases); `Field(validation_alias=...)`
+        # sets only the validation alias and leaves `info.alias is None`;
+        # `Field(serialization_alias=...)` only affects dump and is
+        # neutralized below by passing `by_alias=False` everywhere we
+        # call `model_dump`. The guard fires for both alias and
+        # validation_alias because both make `model_validate` reject
+        # canonical-name input under default config.
         # (`self.model` for the same `type[Any]` reason as above.)
         aliased_fields = [
-            name for name, info in self.model.model_fields.items() if info.alias is not None
+            name
+            for name, info in self.model.model_fields.items()
+            if info.alias is not None or info.validation_alias is not None
         ]
         if aliased_fields:
             config = getattr(self.model, "model_config", {})
@@ -161,12 +176,15 @@ class _PydanticAdapter(Adapter):
             if not (populate_by_name or validate_by_name):
                 raise ConfigurationError(
                     f"{self.model.__name__} declares field aliases "
-                    f"({aliased_fields!r}) without populate_by_name=True. "
-                    "With default Pydantic config, model_dump() writes "
-                    "canonical field names but model_validate() expects "
-                    "aliases — rows would be unreadable. Set "
-                    "model_config = ConfigDict(populate_by_name=True), "
-                    "or remove the field aliases."
+                    f"({aliased_fields!r}) without populate_by_name=True "
+                    "or validate_by_name=True. With default Pydantic "
+                    "config, model_validate() rejects canonical field "
+                    "names when an alias or validation_alias is set — "
+                    "rows we write (canonical-keyed, since we force "
+                    "by_alias=False on dump) would be unreadable. Set "
+                    "model_config = ConfigDict(populate_by_name=True) "
+                    "(or validate_by_name=True on Pydantic v2.11+), or "
+                    "remove the field aliases."
                 )
 
     def serialize(self, value: Any) -> Any:
@@ -174,9 +192,13 @@ class _PydanticAdapter(Adapter):
             return None
         try:
             if isinstance(value, self.model):
-                return value.model_dump(mode="json")
+                # `by_alias=False` keeps stored shape canonical even
+                # when the model sets `serialization_alias` or
+                # `serialize_by_alias=True`; matches what `deserialize`
+                # expects to read back.
+                return value.model_dump(mode="json", by_alias=False)
             # validate-then-dump: ensures stored shape is canonical
-            return self.model.model_validate(value).model_dump(mode="json")
+            return self.model.model_validate(value).model_dump(mode="json", by_alias=False)
         except Exception as exc:
             raise SerializationError(
                 f"Cannot serialize {type(value).__name__} into "
@@ -192,9 +214,9 @@ class _PydanticAdapter(Adapter):
 
     def project(self, response: Any) -> dict[str, Any]:
         if isinstance(response, self.model):
-            return response.model_dump(mode="json")
+            return response.model_dump(mode="json", by_alias=False)
         if isinstance(response, dict):
-            return self.model.model_validate(response).model_dump(mode="json")
+            return self.model.model_validate(response).model_dump(mode="json", by_alias=False)
         return {}
 
 

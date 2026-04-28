@@ -55,7 +55,18 @@ races concurrent writes. "Lazy" here means "query deferred", not
 
 ### `where_data` — equality only
 
-`where_data` compiles to `json_extract(data_json, '$.key') = ?` per pair.
+`where_data` compiles to `json_extract(data_json, '$.key') = ?` for most
+values, with two type-aware special cases that keep equality honest:
+
+- `None` matches with `IS NULL` — both JSON `null` and a missing key
+  satisfy `where_data={"foo": None}` (SQLite's `json_extract` returns
+  SQL `NULL` for both, so they're indistinguishable, and "field is
+  null" reasonably means either).
+- `bool` matches against `json_type(...)` so `where_data={"flag":
+  True}` matches only JSON `true` (not int `1`), and `False` only
+  JSON `false` (not int `0`). Python's `bool` is an `int` subclass,
+  so a plain bind would otherwise conflate them.
+
 Limitations:
 
 - **Top-level keys only**. Nested paths (`"address.city"`) raise

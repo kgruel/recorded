@@ -475,8 +475,9 @@ multiple recorders booting against the same DB don't double-reap.
 
 **`status` is a write-once-per-transition record of a row's progress,
 not a real-time health signal.** Status changes are durable
-transactions written by whoever owns the row at that moment; liveness
-is observable separately, by reading `started_at` against a clock.
+transactions written by whoever owns the row at that moment; staleness
+is inferable separately, by reading `started_at` against a clock and
+comparing against `reaper_threshold_s`.
 Decoupling the two is what lets read-only consumers — dashboards,
 queries, the CLI — observe execution progress without racing the
 leader, and without needing write privilege to translate "stuck"

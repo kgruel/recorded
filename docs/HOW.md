@@ -342,10 +342,27 @@ Three surfaces, all on `Recorder`:
 | `recorder.query(kind, status, key, since, until, where_data, limit, order) -> Iterator[Job]` | filtered iterator with deferred query |
 | `recorder.connection() -> sqlite3.Connection` | escape hatch for arbitrary SQL |
 
-`where_data` compiles to `json_extract(data_json, '$.key') = ?` —
-equality on top-level keys only, multiple keys AND together. Anything
-richer (ranges, aggregations, joins) goes through `connection()` raw
-SQL. **No DSL line** — equality-only on top-level keys is the held boundary.
+`where_data` compiles to one of three SQL shapes per pair, dispatched
+on the Python value's type, then AND-joined:
+
+- `None` → `json_extract(data_json, ?) IS NULL`. JSON `null` and a
+  missing key both satisfy this — `json_extract` returns SQL `NULL`
+  for both and cannot distinguish them, and the "is null" reading
+  covers either.
+- `bool` → `json_type(data_json, ?) = 'true' | 'false'`. The `bool`
+  branch must run *before* the general numeric path because in Python
+  `bool` is a subclass of `int` — a plain `= ?` bind would coerce
+  `True`/`False` to `1`/`0`, and `json_extract` returns SQL int `1`/`0`
+  for both JSON booleans *and* JSON integers, conflating `True` with
+  `1` and `False` with `0`. `json_type` distinguishes them; routing
+  bools through it keeps `True` matching only JSON `true` and `False`
+  only JSON `false`.
+- everything else → `json_extract(data_json, ?) = ?`. Plain equality
+  on top-level keys.
+
+Equality only, top-level keys only. Anything richer (ranges,
+aggregations, joins) goes through `connection()` raw SQL. **No DSL
+line** — equality-only on top-level keys is the held boundary.
 
 Module-level `recorded.last/list/get/connection` delegate to the
 lazy-default `Recorder` (constructed on first use, configurable via
