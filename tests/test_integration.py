@@ -95,9 +95,7 @@ async def test_fifty_concurrent_async_calls_all_recorded(default_recorder, https
 
 
 @pytest.mark.asyncio
-async def test_fifty_concurrent_idempotent_make_one_real_request(
-    default_recorder, httpserver
-):
+async def test_fifty_concurrent_idempotent_make_one_real_request(default_recorder, httpserver):
     """The financial-safety test. 50 callers, same `key`, gathered. Exactly
     one real HTTP request hits the broker; all 50 callers see the same
     response value."""
@@ -140,9 +138,7 @@ async def test_fifty_concurrent_idempotent_make_one_real_request(
     results = await asyncio.gather(*tasks)
 
     # The financial-safety assertion.
-    assert len(httpserver.log) == 1, (
-        f"expected exactly one real request; got {len(httpserver.log)}"
-    )
+    assert len(httpserver.log) == 1, f"expected exactly one real request; got {len(httpserver.log)}"
     assert seen_count == 1
     # All 50 callers got the same response value.
     for r in results:
@@ -171,9 +167,7 @@ async def test_sequential_idempotency_returns_rehydrated_without_reexecution(
     """Caller A finishes, then B–E join sequentially: each gets the
     rehydrated response, no additional HTTP call."""
 
-    httpserver.expect_request("/orders").respond_with_json(
-        _broker_response(order_id="ord-seq")
-    )
+    httpserver.expect_request("/orders").respond_with_json(_broker_response(order_id="ord-seq"))
 
     @recorder(kind="ext.broker.seq")
     async def place(req: dict) -> dict:
@@ -231,9 +225,7 @@ async def test_attach_trail_under_real_io(default_recorder, httpserver):
 
     raw = (
         default_recorder._connection()
-        .execute(
-            "SELECT data_json FROM jobs WHERE kind=?", ("ext.broker.attach",)
-        )
+        .execute("SELECT data_json FROM jobs WHERE kind=?", ("ext.broker.attach",))
         .fetchone()[0]
     )
     data = json.loads(raw)
@@ -291,9 +283,7 @@ async def test_pydantic_adapter_records_broker_payload(default_recorder, httpser
     @recorder(kind="ext.tier.pyd", request=OrderReq, data=OrderView)
     async def place(req: OrderReq) -> dict:
         async with httpx.AsyncClient() as c:
-            return (
-                await c.post(httpserver.url_for("/pyd"), json={"sku": req.sku})
-            ).json()
+            return (await c.post(httpserver.url_for("/pyd"), json={"sku": req.sku})).json()
 
     await place(OrderReq(sku="XYZ", qty=2))
     job = last(1, kind="ext.tier.pyd")[0]
@@ -305,9 +295,7 @@ async def test_pydantic_adapter_records_broker_payload(default_recorder, httpser
 
 @pytest.mark.asyncio
 async def test_plain_dict_passthrough_records_broker_payload(default_recorder, httpserver):
-    httpserver.expect_request("/dict").respond_with_json(
-        _broker_response(order_id="dict-1")
-    )
+    httpserver.expect_request("/dict").respond_with_json(_broker_response(order_id="dict-1"))
 
     @recorder(kind="ext.tier.dict")
     async def place(req: dict) -> dict:
@@ -325,16 +313,12 @@ async def test_plain_dict_passthrough_records_broker_payload(default_recorder, h
 
 
 @pytest.mark.asyncio
-async def test_server_500_marks_row_failed_and_propagates_exception(
-    default_recorder, httpserver
-):
+async def test_server_500_marks_row_failed_and_propagates_exception(default_recorder, httpserver):
     """The wrapped function's HTTPStatusError propagates verbatim (we don't
     wrap user-domain exceptions). The row is `failed` and the recorded
     error captures the type and message."""
 
-    httpserver.expect_request("/orders").respond_with_data(
-        "broker exploded", status=500
-    )
+    httpserver.expect_request("/orders").respond_with_data("broker exploded", status=500)
 
     @recorder(kind="ext.broker.5xx")
     async def place(req: dict) -> dict:
@@ -494,10 +478,12 @@ async def test_unrecordable_response_under_load_marks_failed_and_returns_result(
         await asyncio.gather(*(caller(i) for i in range(50)))
 
     # Warnings emitted for the recording failures.
-    assert sum(
-        1 for r in caplog.records
-        if r.name == "recorded" and "failed to serialize" in r.message
-    ) == 50
+    assert (
+        sum(
+            1 for r in caplog.records if r.name == "recorded" and "failed to serialize" in r.message
+        )
+        == 50
+    )
 
     rows = (
         default_recorder._connection()
@@ -515,9 +501,7 @@ async def test_unrecordable_response_under_load_marks_failed_and_returns_result(
 
 
 def test_sync_decorator_with_sync_httpx_client(default_recorder, httpserver):
-    httpserver.expect_request("/sync").respond_with_json(
-        _broker_response(order_id="sync-1")
-    )
+    httpserver.expect_request("/sync").respond_with_json(_broker_response(order_id="sync-1"))
 
     @recorder(kind="ext.broker.sync")
     def place(req: dict) -> dict:
@@ -539,9 +523,7 @@ def test_sync_decorator_with_sync_httpx_client(default_recorder, httpserver):
 
 
 @pytest.mark.asyncio
-async def test_async_run_does_not_block_loop_during_real_sync_io(
-    default_recorder, httpserver
-):
+async def test_async_run_does_not_block_loop_during_real_sync_io(default_recorder, httpserver):
     """`.async_run` runs the sync function on the threadpool via
     `asyncio.to_thread`, so the event loop stays responsive. We prove this
     by ticking a counter task while the sync HTTP call is in flight; if

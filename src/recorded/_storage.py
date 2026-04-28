@@ -97,7 +97,7 @@ UPDATE jobs
               ORDER BY submitted_at
               LIMIT 1)
    AND status='pending'
-RETURNING {', '.join(COLUMNS)}
+RETURNING {", ".join(COLUMNS)}
 """
 
 # Reaper: any row still `running` whose `started_at` predates the threshold

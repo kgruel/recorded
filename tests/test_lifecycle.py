@@ -20,11 +20,14 @@ def _events_for(default_recorder, job_id: str) -> list[tuple[str, ...]]:
     monotonic order. Combined with the explicit row-status snapshot
     below, this is sufficient to exercise the contract.
     """
-    row = default_recorder._connection().execute(
-        "SELECT status, submitted_at, started_at, completed_at "
-        "FROM jobs WHERE id=?",
-        (job_id,),
-    ).fetchone()
+    row = (
+        default_recorder._connection()
+        .execute(
+            "SELECT status, submitted_at, started_at, completed_at FROM jobs WHERE id=?",
+            (job_id,),
+        )
+        .fetchone()
+    )
     return row
 
 
@@ -42,9 +45,11 @@ async def test_bare_call_writes_pending_running_terminal_in_order(default_record
     @recorder(kind="t.async")
     async def do(x):
         # While we're inside the wrapped function, the row should be running.
-        rows = default_recorder._connection().execute(
-            "SELECT status FROM jobs WHERE kind=?", ("t.async",)
-        ).fetchall()
+        rows = (
+            default_recorder._connection()
+            .execute("SELECT status FROM jobs WHERE kind=?", ("t.async",))
+            .fetchall()
+        )
         seen_during_call.extend(r[0] for r in rows)
         return {"x": x, "ok": True}
 
@@ -53,11 +58,15 @@ async def test_bare_call_writes_pending_running_terminal_in_order(default_record
     assert result == {"x": 7, "ok": True}
     assert seen_during_call == ["running"]
 
-    rows = default_recorder._connection().execute(
-        "SELECT status, submitted_at, started_at, completed_at, response_json "
-        "FROM jobs WHERE kind=?",
-        ("t.async",),
-    ).fetchall()
+    rows = (
+        default_recorder._connection()
+        .execute(
+            "SELECT status, submitted_at, started_at, completed_at, response_json "
+            "FROM jobs WHERE kind=?",
+            ("t.async",),
+        )
+        .fetchall()
+    )
     assert len(rows) == 1
     status, sub, start, comp, resp = rows[0]
     assert status == "completed"
@@ -82,11 +91,14 @@ def test_bare_call_writes_pending_running_terminal_in_order_sync(default_recorde
     assert do(21) == 42
     assert seen == ["running"]
 
-    row = default_recorder._connection().execute(
-        "SELECT status, submitted_at, started_at, completed_at FROM jobs "
-        "WHERE kind=?",
-        ("t.sync",),
-    ).fetchone()
+    row = (
+        default_recorder._connection()
+        .execute(
+            "SELECT status, submitted_at, started_at, completed_at FROM jobs WHERE kind=?",
+            ("t.sync",),
+        )
+        .fetchone()
+    )
     status, sub, start, comp = row
     assert status == "completed"
     assert sub <= start <= comp
@@ -119,9 +131,7 @@ def test_bare_call_returns_wrapped_functions_natural_value_sync(default_recorder
     assert returner() == [1, 2, "three"]
 
 
-def test_unrecordable_response_marks_row_failed_and_returns_result(
-    default_recorder, caplog
-):
+def test_unrecordable_response_marks_row_failed_and_returns_result(default_recorder, caplog):
     """Wrap-transparency: when the wrapped function returns successfully,
     the decorated callable returns that value — even if recording it
     fails. The bare function would never raise on a recording failure,
@@ -141,16 +151,16 @@ def test_unrecordable_response_marks_row_failed_and_returns_result(
 
     assert result is sentinel  # return value preserved
 
-    row = default_recorder._connection().execute(
-        "SELECT status, error_json FROM jobs WHERE kind=?", ("t.unrecordable",)
-    ).fetchone()
+    row = (
+        default_recorder._connection()
+        .execute("SELECT status, error_json FROM jobs WHERE kind=?", ("t.unrecordable",))
+        .fetchone()
+    )
     assert row[0] == "failed"
 
     # Warning emitted so the recording failure is visible in logs.
     assert any(
-        "failed to serialize response" in r.message
-        for r in caplog.records
-        if r.name == "recorded"
+        "failed to serialize response" in r.message for r in caplog.records if r.name == "recorded"
     )
 
 
@@ -177,9 +187,11 @@ def test_dataclass_response_records_as_dict_without_response_model(default_recor
 
     fn()
 
-    row = default_recorder._connection().execute(
-        "SELECT status, response_json FROM jobs WHERE kind=?", ("t.audit.dc",)
-    ).fetchone()
+    row = (
+        default_recorder._connection()
+        .execute("SELECT status, response_json FROM jobs WHERE kind=?", ("t.audit.dc",))
+        .fetchone()
+    )
     assert row[0] == "completed"
     assert json.loads(row[1]) == {"order_id": "o1", "total": 12.5}
 
@@ -199,9 +211,11 @@ def test_pydantic_response_records_as_dict_without_response_model(default_record
 
     fn()
 
-    row = default_recorder._connection().execute(
-        "SELECT status, response_json FROM jobs WHERE kind=?", ("t.audit.pyd",)
-    ).fetchone()
+    row = (
+        default_recorder._connection()
+        .execute("SELECT status, response_json FROM jobs WHERE kind=?", ("t.audit.pyd",))
+        .fetchone()
+    )
     assert row[0] == "completed"
     assert json.loads(row[1]) == {"order_id": "o2", "total": 99.0}
 
@@ -218,9 +232,11 @@ async def test_bare_call_failure_writes_failed_terminal_and_reraises(default_rec
     with pytest.raises(ValueError, match="nope"):
         await boom()
 
-    row = default_recorder._connection().execute(
-        "SELECT status, error_json FROM jobs WHERE kind=?", ("t.boom",)
-    ).fetchone()
+    row = (
+        default_recorder._connection()
+        .execute("SELECT status, error_json FROM jobs WHERE kind=?", ("t.boom",))
+        .fetchone()
+    )
     status, err = row
     assert status == "failed"
     assert json.loads(err) == {"type": "ValueError", "message": "nope"}
@@ -242,9 +258,11 @@ async def test_bare_call_serializes_request_via_adapter(default_recorder):
         return {"sku": req.sku}
 
     await take(_Req(sku="A", qty=3))
-    raw = default_recorder._connection().execute(
-        "SELECT request_json FROM jobs WHERE kind=?", ("t.req",)
-    ).fetchone()[0]
+    raw = (
+        default_recorder._connection()
+        .execute("SELECT request_json FROM jobs WHERE kind=?", ("t.req",))
+        .fetchone()[0]
+    )
     assert json.loads(raw) == {"sku": "A", "qty": 3}
 
 
@@ -257,9 +275,11 @@ def test_multi_arg_request_captured_as_envelope(default_recorder):
         return a + b
 
     add(1, 2, label="hi")
-    raw = default_recorder._connection().execute(
-        "SELECT request_json FROM jobs WHERE kind=?", ("t.multi",)
-    ).fetchone()[0]
+    raw = (
+        default_recorder._connection()
+        .execute("SELECT request_json FROM jobs WHERE kind=?", ("t.multi",))
+        .fetchone()[0]
+    )
     assert json.loads(raw) == {"args": [1, 2], "kwargs": {"label": "hi"}}
 
 

@@ -86,14 +86,10 @@ async def capture_request(
     importing FastAPI/Starlette.
     """
     if redact_headers is not None and allow_headers is not None:
-        raise TypeError(
-            "capture_request: pass either redact_headers= or allow_headers=, "
-            "not both."
-        )
+        raise TypeError("capture_request: pass either redact_headers= or allow_headers=, not both.")
     if max_body_bytes is not None and max_body_bytes < 0:
         raise TypeError(
-            f"capture_request: max_body_bytes must be non-negative, got "
-            f"{max_body_bytes}."
+            f"capture_request: max_body_bytes must be non-negative, got {max_body_bytes}."
         )
 
     missing = [a for a in _REQUIRED_ATTRS if not hasattr(request, a)]
@@ -104,8 +100,7 @@ async def capture_request(
         )
     if max_body_bytes is not None and not hasattr(request, "stream"):
         raise TypeError(
-            "capture_request(max_body_bytes=...) requires the request object "
-            "to expose `stream()`."
+            "capture_request(max_body_bytes=...) requires the request object to expose `stream()`."
         )
 
     truncated = False
@@ -148,11 +143,7 @@ async def capture_request(
 
     if allow_headers is not None:
         allow = {h.lower() for h in allow_headers}
-        headers = {
-            k.lower(): v
-            for k, v in request.headers.items()
-            if k.lower() in allow
-        }
+        headers = {k.lower(): v for k, v in request.headers.items() if k.lower() in allow}
     else:
         redact = (
             {h.lower() for h in redact_headers}

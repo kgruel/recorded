@@ -242,7 +242,6 @@ async def test_typed_instance_join_preserves_type_in_process(default_recorder):
     assert joiner_result.amount == 42
 
 
-
 # --- live-result cache hygiene (regression tests for the leak fix) ----------
 
 
@@ -296,7 +295,6 @@ def test_keyed_bare_call_no_joiner_clears_cache_on_resolve(default_recorder):
     assert len(default_recorder._live_results) == 0
 
 
-
 # --- IdempotencyRaceError raise sites (post-INSERT lookup returns None) ----
 #
 # Three call paths each raise `IdempotencyRaceError` when the post-INSERT
@@ -323,16 +321,12 @@ def test_submit_raises_idempotency_race_when_post_insert_lookup_returns_none(
     # unique index.
     blocker_id = _storage_mod.new_id()
     now = _storage_mod.now_iso()
-    rec._insert_running(
-        blocker_id, "t.race.submit", "kk-race-submit", now, now, '"x"'
-    )
+    rec._insert_running(blocker_id, "t.race.submit", "kk-race-submit", now, now, '"x"')
 
     # Force the active-row lookup to return None on both the pre-INSERT
     # check (which then proceeds to the INSERT) and the post-INSERT
     # recovery (which then raises).
-    monkeypatch.setattr(
-        rec, "_lookup_active_by_kind_key", lambda kind, key: None
-    )
+    monkeypatch.setattr(rec, "_lookup_active_by_kind_key", lambda kind, key: None)
 
     with pytest.raises(IdempotencyRaceError) as excinfo:
         fn.submit(1, key="kk-race-submit")
@@ -355,12 +349,8 @@ def test_sync_bare_call_raises_idempotency_race_when_post_insert_lookup_returns_
 
     blocker_id = _storage_mod.new_id()
     now = _storage_mod.now_iso()
-    rec._insert_running(
-        blocker_id, "t.race.bare_sync", "kk-race-sync", now, now, '"x"'
-    )
-    monkeypatch.setattr(
-        rec, "_lookup_active_by_kind_key", lambda kind, key: None
-    )
+    rec._insert_running(blocker_id, "t.race.bare_sync", "kk-race-sync", now, now, '"x"')
+    monkeypatch.setattr(rec, "_lookup_active_by_kind_key", lambda kind, key: None)
 
     with pytest.raises(IdempotencyRaceError) as excinfo:
         fn(1, key="kk-race-sync")
@@ -384,12 +374,8 @@ async def test_async_bare_call_raises_idempotency_race_when_post_insert_lookup_r
 
     blocker_id = _storage_mod.new_id()
     now = _storage_mod.now_iso()
-    rec._insert_running(
-        blocker_id, "t.race.bare_async", "kk-race-async", now, now, '"x"'
-    )
-    monkeypatch.setattr(
-        rec, "_lookup_active_by_kind_key", lambda kind, key: None
-    )
+    rec._insert_running(blocker_id, "t.race.bare_async", "kk-race-async", now, now, '"x"')
+    monkeypatch.setattr(rec, "_lookup_active_by_kind_key", lambda kind, key: None)
 
     with pytest.raises(IdempotencyRaceError) as excinfo:
         await fn(1, key="kk-race-async")

@@ -35,9 +35,7 @@ _logger = logging.getLogger("recorded")
 
 
 # Error payload for tasks aborted by `Recorder.shutdown()`.
-_CANCEL_ERROR_JSON = make_error_json(
-    "CancelledError", "worker shutdown cancelled in-flight job"
-)
+_CANCEL_ERROR_JSON = make_error_json("CancelledError", "worker shutdown cancelled in-flight job")
 
 
 class Worker:
@@ -64,9 +62,7 @@ class Worker:
             if self._started:
                 return
             self._started = True
-            self._thread = threading.Thread(
-                target=self._run, name="recorded-worker", daemon=True
-            )
+            self._thread = threading.Thread(target=self._run, name="recorded-worker", daemon=True)
             self._thread.start()
         # Block until the loop is created so a `submit()` racing the
         # start has a coherent target.
@@ -88,9 +84,7 @@ class Worker:
                 for t in pending:
                     t.cancel()
                 if pending:
-                    loop.run_until_complete(
-                        asyncio.gather(*pending, return_exceptions=True)
-                    )
+                    loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
             finally:
                 loop.close()
 
@@ -174,9 +168,7 @@ class Worker:
                 "Ensure the module defining this kind is imported "
                 "in the worker process.",
             )
-            await asyncio.to_thread(
-                self.recorder._mark_failed, job_id, _storage.now_iso(), err
-            )
+            await asyncio.to_thread(self.recorder._mark_failed, job_id, _storage.now_iso(), err)
             return
 
         request = entry.request.deserialize(_loads(request_json))
@@ -184,25 +176,23 @@ class Worker:
         fn = entry.fn
 
         if inspect.iscoroutinefunction(fn):
+
             async def _invoke():
                 return await fn(request)
         else:
+
             async def _invoke():
                 return await asyncio.to_thread(fn, request)
 
         try:
-            await _run_and_record_async(
-                self.recorder, entry, job_id, key, _invoke
-            )
+            await _run_and_record_async(self.recorder, entry, job_id, key, _invoke)
         except asyncio.CancelledError:
             # Worker shutdown cancelled this task. The recording layer
             # didn't write a terminal row (CancelledError bypasses its
             # except-Exception). Synchronous mark so the write commits
             # before CancelledError unwinds further.
             try:
-                self.recorder._mark_failed(
-                    job_id, _storage.now_iso(), _CANCEL_ERROR_JSON
-                )
+                self.recorder._mark_failed(job_id, _storage.now_iso(), _CANCEL_ERROR_JSON)
             except Exception:
                 pass
             raise

@@ -107,9 +107,7 @@ async def test_recorded_list_filters_by_kind_status_since_until_where_data(
     assert len(cust7) == 3  # 2 places + 1 cancel for cust 7
 
     # Multi-key where_data ANDs together.
-    cust7_completed = list(
-        recorded.list(status="completed", where_data={"customer_id": 7})
-    )
+    cust7_completed = list(recorded.list(status="completed", where_data={"customer_id": 7}))
     assert len(cust7_completed) == 3
 
     # since/until: clip to the future, expect empty.

@@ -100,10 +100,9 @@ def test_error_model_falls_back_to_type_message_when_attach_error_not_called(
     # because BrokerError requires (code, message, correlation_id), so
     # the rehydrator must surface the raw dict instead. The intent here
     # is "don't crash on the read path"; we tolerate either shape.
-    raw = default_recorder._fetchone(
-        "SELECT error_json FROM jobs WHERE id=?", (job.id,)
-    )
+    raw = default_recorder._fetchone("SELECT error_json FROM jobs WHERE id=?", (job.id,))
     import json as _json
+
     err = _json.loads(raw[0])
     assert err == {"type": "RuntimeError", "message": "plain failure"}
 
@@ -125,10 +124,9 @@ def test_error_model_serialization_failure_falls_back_to_type_message(
         fn({})
 
     rows = default_recorder.last(1, kind="t.err.bad_payload")
-    raw = default_recorder._fetchone(
-        "SELECT error_json FROM jobs WHERE id=?", (rows[0].id,)
-    )
+    raw = default_recorder._fetchone("SELECT error_json FROM jobs WHERE id=?", (rows[0].id,))
     import json as _json
+
     err = _json.loads(raw[0])
     # Fell back to the live exception's shape.
     assert err == {"type": "RuntimeError", "message": "the original error"}
@@ -188,7 +186,6 @@ def test_attach_error_in_passthrough_mode_populates_error_slot(default_recorder)
     assert job.status == "failed"
     # Passthrough rehydrates as a plain dict.
     assert job.error == {"code": "E_RATE", "retry_after": 30, "detail": "rate limited"}
-
 
 
 # --- _safe_deserialize: error=Model + fallback-shaped row -------------------

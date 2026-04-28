@@ -239,8 +239,7 @@ def test_atexit_does_not_warn_when_configure_is_used(tmp_path):
     )
     assert proc.returncode == 0, proc.stderr
     assert "never shut down" not in proc.stderr, (
-        f"configure() singleton should not trigger dirty warning:\n"
-        f"{proc.stderr}"
+        f"configure() singleton should not trigger dirty warning:\n{proc.stderr}"
     )
 
 
@@ -275,8 +274,7 @@ def test_atexit_does_not_warn_when_with_block_used(tmp_path):
         timeout=10.0,
     )
     assert "never shut down" not in proc.stderr, (
-        f"`with Recorder(...)` should not trigger dirty warning:\n"
-        f"{proc.stderr}"
+        f"`with Recorder(...)` should not trigger dirty warning:\n{proc.stderr}"
     )
 
 
@@ -317,9 +315,6 @@ def test_atexit_runs_shutdown_on_configured_default_only(tmp_path):
     # by SQLite. Both -wal and -shm should be gone.
     assert db.exists(), "primary db file should exist"
     assert not (tmp_path / "jobs.db-wal").exists(), (
-        "stale WAL file remains after subprocess exit; "
-        "atexit shutdown probably did not run"
+        "stale WAL file remains after subprocess exit; atexit shutdown probably did not run"
     )
-    assert not (tmp_path / "jobs.db-shm").exists(), (
-        "stale SHM file remains after subprocess exit"
-    )
+    assert not (tmp_path / "jobs.db-shm").exists(), "stale SHM file remains after subprocess exit"

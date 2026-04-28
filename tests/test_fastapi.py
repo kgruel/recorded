@@ -164,9 +164,7 @@ def test_fastapi_capture_request_allow_headers_drops_others():
 
     @app.post("/x")
     async def handler(request: Request):
-        env = await recorded_fastapi.capture_request(
-            request, allow_headers=["x-trace"]
-        )
+        env = await recorded_fastapi.capture_request(request, allow_headers=["x-trace"])
         captured.append(env)
         return {"ok": True}
 
@@ -194,9 +192,7 @@ def test_fastapi_capture_request_allow_and_redact_mutually_exclusive():
 
     with pytest.raises(TypeError, match="not both"):
         asyncio.run(
-            recorded_fastapi.capture_request(
-                _Stub(), redact_headers=["a"], allow_headers=["b"]
-            )
+            recorded_fastapi.capture_request(_Stub(), redact_headers=["a"], allow_headers=["b"])
         )
 
 
@@ -232,9 +228,7 @@ def test_fastapi_capture_request_max_body_bytes_under_cap_no_marker():
 
     @app.post("/x")
     async def handler(request: Request):
-        env = await recorded_fastapi.capture_request(
-            request, max_body_bytes=1024
-        )
+        env = await recorded_fastapi.capture_request(request, max_body_bytes=1024)
         captured.append(env)
         return {"ok": True}
 
@@ -258,9 +252,7 @@ def test_fastapi_capture_request_max_body_bytes_rejects_negative():
             return b""
 
     with pytest.raises(TypeError, match="non-negative"):
-        asyncio.run(
-            recorded_fastapi.capture_request(_Stub(), max_body_bytes=-1)
-        )
+        asyncio.run(recorded_fastapi.capture_request(_Stub(), max_body_bytes=-1))
 
 
 def test_fastapi_capture_request_rejects_non_request_shaped():

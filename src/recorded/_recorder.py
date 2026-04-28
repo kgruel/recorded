@@ -108,9 +108,7 @@ class Recorder:
         # at terminal-resolution time, and using `_lock` for the cache
         # would deadlock since the reaper holds `_lock` while resolving.
         self._notify_lock = threading.Lock()
-        self._notify_subscribers: dict[
-            str, list[concurrent.futures.Future]
-        ] = {}
+        self._notify_subscribers: dict[str, list[concurrent.futures.Future]] = {}
         # Live-result cache: in-process leaders stash their live result
         # here before the terminal write so same-process idempotency
         # joiners receive the typed object (not the storage-rehydrated
@@ -140,9 +138,7 @@ class Recorder:
             if self._conn is not None:
                 return self._conn
             if self._closed:
-                raise RecorderClosedError(
-                    f"Recorder({self.path!r}) has been shut down."
-                )
+                raise RecorderClosedError(f"Recorder({self.path!r}) has been shut down.")
             self._conn = _storage.open_connection(self.path)
             _storage.ensure_schema(self._conn)
             self._reap_stuck_running_unlocked(self._conn)
@@ -277,9 +273,7 @@ class Recorder:
         """
         order_norm = order.lower()
         if order_norm not in ("asc", "desc"):
-            raise ConfigurationError(
-                f"list(order=...) must be 'asc' or 'desc', got {order!r}"
-            )
+            raise ConfigurationError(f"list(order=...) must be 'asc' or 'desc', got {order!r}")
 
         clauses: list[str] = []
         params: list[Any] = []
@@ -293,9 +287,7 @@ class Recorder:
             else:
                 statuses = tuple(status)
                 if not statuses:
-                    raise ConfigurationError(
-                        "list(status=...) tuple/list must be non-empty."
-                    )
+                    raise ConfigurationError("list(status=...) tuple/list must be non-empty.")
                 placeholders = ",".join("?" * len(statuses))
                 clauses.append(f"status IN ({placeholders})")
                 params.extend(statuses)
@@ -389,9 +381,7 @@ class Recorder:
         completed_at: str,
         error_json: str | None,
     ) -> None:
-        rowcount = self._execute_count(
-            _storage.UPDATE_FAILED, (completed_at, error_json, job_id)
-        )
+        rowcount = self._execute_count(_storage.UPDATE_FAILED, (completed_at, error_json, job_id))
         if rowcount > 0:
             self._resolve(job_id, _storage.STATUS_FAILED)
 
@@ -399,9 +389,7 @@ class Recorder:
         """Atomic pending → running transition; returns the claimed row."""
         conn = self._connection()
         with self._write_lock:
-            row = conn.execute(
-                _storage.CLAIM_ONE, (_storage.now_iso(),)
-            ).fetchone()
+            row = conn.execute(_storage.CLAIM_ONE, (_storage.now_iso(),)).fetchone()
         return row
 
     def _row_status(self, job_id: str) -> str | None:
@@ -415,9 +403,7 @@ class Recorder:
         the unconverted recorded shape regardless of whether `error=Model`
         rehydrates `Job.error` into an instance on the read path.
         """
-        row = self._fetchone(
-            "SELECT error_json FROM jobs WHERE id = ?", (job_id,)
-        )
+        row = self._fetchone("SELECT error_json FROM jobs WHERE id = ?", (job_id,))
         if row is None or row[0] is None:
             return None
         try:
@@ -426,9 +412,7 @@ class Recorder:
             return None
         return decoded if isinstance(decoded, dict) else None
 
-    def _lookup_active_by_kind_key(
-        self, kind: str, key: str
-    ) -> tuple[str, str] | None:
+    def _lookup_active_by_kind_key(self, kind: str, key: str) -> tuple[str, str] | None:
         row = self._fetchone(
             "SELECT id, status FROM jobs "
             "WHERE kind=? AND key=? AND status IN ('pending','running','completed')",
@@ -436,9 +420,7 @@ class Recorder:
         )
         return None if row is None else (row[0], row[1])
 
-    def _lookup_latest_failed(
-        self, kind: str, key: str
-    ) -> str | None:
+    def _lookup_latest_failed(self, kind: str, key: str) -> str | None:
         row = self._fetchone(
             "SELECT id FROM jobs "
             "WHERE kind=? AND key=? AND status='failed' "
@@ -450,9 +432,7 @@ class Recorder:
     def _flush_attach(self, job_id: str, key: str, value: Any) -> None:
         payload = json.dumps({key: value})
         self._execute(
-            "UPDATE jobs "
-            "SET data_json = json_patch(COALESCE(data_json, '{}'), ?) "
-            "WHERE id = ?",
+            "UPDATE jobs SET data_json = json_patch(COALESCE(data_json, '{}'), ?) WHERE id = ?",
             (payload, job_id),
         )
 
@@ -493,9 +473,7 @@ class Recorder:
                 fut.set_result(status)
         return fut
 
-    def _unsubscribe(
-        self, job_id: str, fut: concurrent.futures.Future
-    ) -> None:
+    def _unsubscribe(self, job_id: str, fut: concurrent.futures.Future) -> None:
         with self._notify_lock:
             lst = self._notify_subscribers.get(job_id)
             if lst is None:
@@ -569,12 +547,9 @@ class Recorder:
         the reaper just failed are dropped.
         """
         threshold_iso = _storage.format_iso(
-            datetime.now(timezone.utc)
-            - timedelta(seconds=self.reaper_threshold_s)
+            datetime.now(timezone.utc) - timedelta(seconds=self.reaper_threshold_s)
         )
-        rows = conn.execute(
-            _storage.REAP_STUCK, (_storage.now_iso(), threshold_iso)
-        ).fetchall()
+        rows = conn.execute(_storage.REAP_STUCK, (_storage.now_iso(), threshold_iso)).fetchall()
         # Resolve subscribers and clear any straggling stash. `_resolve`
         # already pops `_live_results[job_id]` on the no-subscriber path
         # (which is the path for reaped rows), and uses `_notify_lock` —
@@ -590,9 +565,7 @@ class Recorder:
         # runs after we release.
         with self._lock:
             if self._closed:
-                raise RecorderClosedError(
-                    f"Recorder({self.path!r}) has been shut down."
-                )
+                raise RecorderClosedError(f"Recorder({self.path!r}) has been shut down.")
             if self._worker is None:
                 # Lazy import to keep the worker module unloaded for
                 # bare-call-only code paths.
@@ -621,9 +594,7 @@ def _normalize_iso(value: str | datetime) -> str:
         try:
             parsed = _parse_iso(value)
         except ValueError as e:
-            raise ConfigurationError(
-                f"since=/until= got non-ISO8601 string {value!r}: {e}"
-            ) from e
+            raise ConfigurationError(f"since=/until= got non-ISO8601 string {value!r}: {e}") from e
         return _storage.format_iso(parsed)
     return _storage.format_iso(value)
 

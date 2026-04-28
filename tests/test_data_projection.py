@@ -54,9 +54,7 @@ def test_data_projection_dataclass_instance(default_recorder):
     assert job.data.order_id == "o1"
     assert job.data.total == 12.5
 
-    raw = default_recorder._fetchone(
-        "SELECT data_json FROM jobs WHERE id=?", (job.id,)
-    )
+    raw = default_recorder._fetchone("SELECT data_json FROM jobs WHERE id=?", (job.id,))
     parsed = json.loads(raw[0])
     assert parsed == {"order_id": "o1", "total": 12.5}
 
@@ -76,9 +74,7 @@ def test_data_projection_pydantic_response_instance(default_recorder):
     assert job.data.order_id == "o2"
     assert job.data.total == 99.0
 
-    raw = default_recorder._fetchone(
-        "SELECT data_json FROM jobs WHERE id=?", (job.id,)
-    )
+    raw = default_recorder._fetchone("SELECT data_json FROM jobs WHERE id=?", (job.id,))
     parsed = json.loads(raw[0])
     assert parsed == {"order_id": "o2", "total": 99.0}
 
@@ -98,9 +94,7 @@ def test_data_projection_pydantic_response_dict_still_works(default_recorder):
     assert job.data.order_id == "o3"
     assert job.data.total == 1.0
 
-    raw = default_recorder._fetchone(
-        "SELECT data_json FROM jobs WHERE id=?", (job.id,)
-    )
+    raw = default_recorder._fetchone("SELECT data_json FROM jobs WHERE id=?", (job.id,))
     parsed = json.loads(raw[0])
     # `model_validate` strips unknown fields by default; `extra` doesn't survive.
     assert parsed == {"order_id": "o3", "total": 1.0}
@@ -134,9 +128,9 @@ def drift_caplog(caplog):
 
 def _drift_warnings(caplog):
     return [
-        r for r in caplog.records
-        if r.levelno == logging.WARNING
-        and "projection produced empty data" in r.getMessage()
+        r
+        for r in caplog.records
+        if r.levelno == logging.WARNING and "projection produced empty data" in r.getMessage()
     ]
 
 
@@ -159,10 +153,7 @@ def test_drift_warning_emitted_once_per_kind_reason(default_recorder, drift_capl
     fn2({})  # second call — no second warning
     fn2({})
 
-    warnings = [
-        r for r in _drift_warnings(drift_caplog)
-        if "t.drift.shape2" in r.getMessage()
-    ]
+    warnings = [r for r in _drift_warnings(drift_caplog) if "t.drift.shape2" in r.getMessage()]
     assert len(warnings) == 1
     assert "shape_mismatch" not in warnings[0].getMessage()  # reason isn't surfaced verbatim
     assert "OrderViewPyd" in warnings[0].getMessage()
@@ -179,15 +170,10 @@ def test_drift_warning_silenced_when_attach_populates(default_recorder, drift_ca
 
     fn({})
 
-    warnings = [
-        r for r in _drift_warnings(drift_caplog)
-        if "t.drift.attach" in r.getMessage()
-    ]
+    warnings = [r for r in _drift_warnings(drift_caplog) if "t.drift.attach" in r.getMessage()]
     assert warnings == []
 
-    raw = default_recorder._fetchone(
-        "SELECT data_json FROM jobs WHERE kind=?", ("t.drift.attach",)
-    )
+    raw = default_recorder._fetchone("SELECT data_json FROM jobs WHERE kind=?", ("t.drift.attach",))
     assert json.loads(raw[0]) == {"customer": "c1"}
 
 
@@ -204,8 +190,7 @@ def test_drift_warning_disabled_via_recorder_flag(db_path, drift_caplog):
         fn({})
 
         warnings = [
-            r for r in _drift_warnings(drift_caplog)
-            if "t.drift.disabled" in r.getMessage()
+            r for r in _drift_warnings(drift_caplog) if "t.drift.disabled" in r.getMessage()
         ]
         assert warnings == []
     finally:
@@ -234,15 +219,10 @@ def test_cross_shape_projection_no_longer_fires(default_recorder, drift_caplog):
     fn({})
 
     rows = default_recorder.last(1, kind="t.cross.dc")
-    raw = default_recorder._fetchone(
-        "SELECT data_json FROM jobs WHERE id=?", (rows[0].id,)
-    )
+    raw = default_recorder._fetchone("SELECT data_json FROM jobs WHERE id=?", (rows[0].id,))
     assert raw[0] is None  # cross-shape no longer projects
 
-    warnings = [
-        r for r in _drift_warnings(drift_caplog)
-        if "t.cross.dc" in r.getMessage()
-    ]
+    warnings = [r for r in _drift_warnings(drift_caplog) if "t.cross.dc" in r.getMessage()]
     assert len(warnings) == 1
 
 
@@ -258,10 +238,7 @@ def test_returning_none_does_not_warn(default_recorder, drift_caplog):
 
     fn({})
 
-    warnings = [
-        r for r in _drift_warnings(drift_caplog)
-        if "t.drift.none" in r.getMessage()
-    ]
+    warnings = [r for r in _drift_warnings(drift_caplog) if "t.drift.none" in r.getMessage()]
     assert warnings == []
 
 
@@ -276,10 +253,7 @@ def test_returning_primitive_warns(default_recorder, drift_caplog, primitive):
 
     fn({})
 
-    warnings = [
-        r for r in _drift_warnings(drift_caplog)
-        if kind in r.getMessage()
-    ]
+    warnings = [r for r in _drift_warnings(drift_caplog) if kind in r.getMessage()]
     assert len(warnings) == 1
 
 
@@ -299,25 +273,18 @@ def test_subclass_of_data_model_projects_no_warning(default_recorder, drift_capl
     job = rows[0]
     assert isinstance(job.data, OrderViewPyd)
 
-    raw = default_recorder._fetchone(
-        "SELECT data_json FROM jobs WHERE id=?", (job.id,)
-    )
+    raw = default_recorder._fetchone("SELECT data_json FROM jobs WHERE id=?", (job.id,))
     parsed = json.loads(raw[0])
     # The subclass dump may include `bonus` (pydantic dumps all declared fields).
     # The point: projection fires, no warning.
     assert parsed["order_id"] == "o1"
     assert parsed["total"] == 1.0
 
-    warnings = [
-        r for r in _drift_warnings(drift_caplog)
-        if "t.subclass" in r.getMessage()
-    ]
+    warnings = [r for r in _drift_warnings(drift_caplog) if "t.subclass" in r.getMessage()]
     assert warnings == []
 
 
-def test_dict_with_extra_fields_pydantic_default_behavior(
-    default_recorder, drift_caplog
-):
+def test_dict_with_extra_fields_pydantic_default_behavior(default_recorder, drift_caplog):
     """Dict response with extra fields beyond the declared pydantic model.
 
     Documents pydantic v2's default: extras are ignored on `model_validate`.
@@ -331,22 +298,15 @@ def test_dict_with_extra_fields_pydantic_default_behavior(
     fn({})
 
     rows = default_recorder.last(1, kind="t.extras")
-    raw = default_recorder._fetchone(
-        "SELECT data_json FROM jobs WHERE id=?", (rows[0].id,)
-    )
+    raw = default_recorder._fetchone("SELECT data_json FROM jobs WHERE id=?", (rows[0].id,))
     parsed = json.loads(raw[0])
     assert parsed == {"order_id": "o1", "total": 1.0}
 
-    warnings = [
-        r for r in _drift_warnings(drift_caplog)
-        if "t.extras" in r.getMessage()
-    ]
+    warnings = [r for r in _drift_warnings(drift_caplog) if "t.extras" in r.getMessage()]
     assert warnings == []
 
 
-def test_dict_missing_required_fields_warns_with_projection_raised(
-    default_recorder, drift_caplog
-):
+def test_dict_missing_required_fields_warns_with_projection_raised(default_recorder, drift_caplog):
     """Dict missing required fields → model_validate raises → projection_raised reason."""
 
     @recorder(kind="t.missing", data=OrderViewPyd)
@@ -355,17 +315,12 @@ def test_dict_missing_required_fields_warns_with_projection_raised(
 
     fn({})
 
-    warnings = [
-        r for r in _drift_warnings(drift_caplog)
-        if "t.missing" in r.getMessage()
-    ]
+    warnings = [r for r in _drift_warnings(drift_caplog) if "t.missing" in r.getMessage()]
     assert len(warnings) == 1
     assert "projection raised" in warnings[0].getMessage()
 
 
-def test_attach_and_projection_both_populate_last_write_wins(
-    default_recorder, drift_caplog
-):
+def test_attach_and_projection_both_populate_last_write_wins(default_recorder, drift_caplog):
     """Both attach and projection populate; conflict rule: attach wins (last-write)."""
     from recorded import attach
 
@@ -378,19 +333,14 @@ def test_attach_and_projection_both_populate_last_write_wins(
     fn({})
 
     rows = default_recorder.last(1, kind="t.merge")
-    raw = default_recorder._fetchone(
-        "SELECT data_json FROM jobs WHERE id=?", (rows[0].id,)
-    )
+    raw = default_recorder._fetchone("SELECT data_json FROM jobs WHERE id=?", (rows[0].id,))
     parsed = json.loads(raw[0])
     # Attach (last-write) wins on the colliding key.
     assert parsed["order_id"] == "from_attach"
     assert parsed["total"] == 42.0  # from projection
     assert parsed["separate_key"] == "x"  # from attach
 
-    warnings = [
-        r for r in _drift_warnings(drift_caplog)
-        if "t.merge" in r.getMessage()
-    ]
+    warnings = [r for r in _drift_warnings(drift_caplog) if "t.merge" in r.getMessage()]
     assert warnings == []
 
 
@@ -404,10 +354,7 @@ def test_drift_via_submit_path(recorder_for_submit, drift_caplog):
     handle: JobHandle = fn.submit({})
     handle.wait_sync(timeout=5.0)
 
-    warnings = [
-        r for r in _drift_warnings(drift_caplog)
-        if "t.drift.submit" in r.getMessage()
-    ]
+    warnings = [r for r in _drift_warnings(drift_caplog) if "t.drift.submit" in r.getMessage()]
     assert len(warnings) == 1
 
 
@@ -427,10 +374,7 @@ def test_per_recorder_dedup_no_cross_contamination(db_path, drift_caplog):
         _recorder_mod._set_default_for_testing(None)
         r1.shutdown()
 
-    warnings_r1 = [
-        r for r in _drift_warnings(drift_caplog)
-        if "t.dedup.iso" in r.getMessage()
-    ]
+    warnings_r1 = [r for r in _drift_warnings(drift_caplog) if "t.dedup.iso" in r.getMessage()]
     assert len(warnings_r1) == 1
 
     drift_caplog.clear()
@@ -443,10 +387,7 @@ def test_per_recorder_dedup_no_cross_contamination(db_path, drift_caplog):
         _recorder_mod._set_default_for_testing(None)
         r2.shutdown()
 
-    warnings_r2 = [
-        r for r in _drift_warnings(drift_caplog)
-        if "t.dedup.iso" in r.getMessage()
-    ]
+    warnings_r2 = [r for r in _drift_warnings(drift_caplog) if "t.dedup.iso" in r.getMessage()]
     assert len(warnings_r2) == 1
 
 
@@ -468,7 +409,8 @@ def test_configure_warn_on_data_drift_forwarded(monkeypatch, db_path, drift_capl
         fn({})
 
         warnings = [
-            rec for rec in _drift_warnings(drift_caplog)
+            rec
+            for rec in _drift_warnings(drift_caplog)
             if "t.configure.disabled" in rec.getMessage()
         ]
         assert warnings == []

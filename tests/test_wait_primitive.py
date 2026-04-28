@@ -22,9 +22,7 @@ def test_subscribe_resolves_when_terminal_write_commits(recorder: Recorder):
     terminal SQL UPDATE resolves it exactly once with the terminal status."""
     job_id = _storage.new_id()
     now = _storage.now_iso()
-    recorder._insert_running(
-        job_id, "t.subscribe", None, now, now, None
-    )
+    recorder._insert_running(job_id, "t.subscribe", None, now, now, None)
 
     fut = recorder._subscribe(job_id)
     assert not fut.done()
@@ -48,10 +46,8 @@ def test_subscribe_returns_immediately_if_already_terminal(
     the future is pre-resolved before `_subscribe` returns."""
     job_id = _storage.new_id()
     now = _storage.now_iso()
-    recorder._insert_running(
-        job_id, "t.subscribe.after", None, now, now, None
-    )
-    recorder._mark_completed(job_id, _storage.now_iso(), '{}', None)
+    recorder._insert_running(job_id, "t.subscribe.after", None, now, now, None)
+    recorder._mark_completed(job_id, _storage.now_iso(), "{}", None)
 
     fut = recorder._subscribe(job_id)
     assert fut.done()
@@ -66,20 +62,16 @@ def test_resolve_only_fires_when_conditional_update_matches(
     `_mark_failed` doesn't re-resolve subscribers."""
     job_id = _storage.new_id()
     now = _storage.now_iso()
-    recorder._insert_running(
-        job_id, "t.resolve.gate", None, now, now, None
-    )
+    recorder._insert_running(job_id, "t.resolve.gate", None, now, now, None)
     recorder._mark_failed(job_id, _storage.now_iso(), '{"type":"X"}')
 
     # Late completion: conditional UPDATE doesn't match (status != running).
     # No second resolve should fire; row stays failed.
-    recorder._mark_completed(job_id, _storage.now_iso(), '{}', None)
+    recorder._mark_completed(job_id, _storage.now_iso(), "{}", None)
     assert recorder._row_status(job_id) == _storage.STATUS_FAILED
 
 
-def test_idempotency_join_in_process_does_not_poll_with_sleep(
-    default_recorder, monkeypatch
-):
+def test_idempotency_join_in_process_does_not_poll_with_sleep(default_recorder, monkeypatch):
     """Named test (`test_idempotency_join_uses_notify_not_polling`): the
     in-process idempotency-collision join wakes via the notify primitive,
     not via `time.sleep` polling.
@@ -123,9 +115,7 @@ def test_idempotency_join_in_process_does_not_poll_with_sleep(
     t.start()
     # Give the joiner a moment to enter `_subscribe` and block on `fut.result`.
     real_sleep(0.05)
-    rec._mark_completed(
-        job_id, _storage.now_iso(), '{"x": 1}', None
-    )
+    rec._mark_completed(job_id, _storage.now_iso(), '{"x": 1}', None)
     t.join(timeout=5.0)
 
     assert join_result["value"] == {"x": 1}
@@ -133,14 +123,13 @@ def test_idempotency_join_in_process_does_not_poll_with_sleep(
 
 
 @pytest.mark.asyncio
-async def test_idempotency_join_uses_notify_not_polling(
-    default_recorder, monkeypatch
-):
+async def test_idempotency_join_uses_notify_not_polling(default_recorder, monkeypatch):
     """Async counterpart: the async join helper wakes via the notify
     primitive without calling `asyncio.sleep` on the in-process path."""
 
     sleep_calls: list[float] = []
     import asyncio as aio_mod
+
     real_async_sleep = aio_mod.sleep
 
     async def tracking_async_sleep(s: float, *a, **k) -> None:

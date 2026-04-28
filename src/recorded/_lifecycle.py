@@ -86,9 +86,9 @@ def _validate_call_args(
     """
     if key is not None and entry.auto_kind:
         raise ConfigurationError(
-            f"{entry.kind} uses an auto-derived kind (\"{entry.kind}\"). "
+            f'{entry.kind} uses an auto-derived kind ("{entry.kind}"). '
             "Idempotency keys require an explicit kind to remain stable across "
-            "renames. Add: @recorder(kind=\"...\")"
+            'renames. Add: @recorder(kind="...")'
         )
     if entry.request.model is not None:
         kw = kwargs or {}
@@ -197,11 +197,7 @@ def _write_completion(
     result: Any,
     buffer: dict[str, Any],
 ) -> None:
-    response_json = (
-        None
-        if result is None
-        else json.dumps(entry.response.serialize(result))
-    )
+    response_json = None if result is None else json.dumps(entry.response.serialize(result))
     data_json = _build_data_json(recorder_inst, entry, result, buffer)
     # Stash the live result only for keyed rows — those are the only ones
     # that can grow same-process idempotency joiners. Non-keyed rows have
@@ -274,7 +270,10 @@ def _warn_data_drift_once(
         "instance of %s, or call attach({...}) inside the function with "
         "what you want queryable. Disable this warning with "
         "configure(warn_on_data_drift=False).",
-        entry.kind, model_name, detail, model_name,
+        entry.kind,
+        model_name,
+        detail,
+        model_name,
     )
 
 
@@ -301,9 +300,7 @@ def _run_and_record(
         try:
             result = invoke()
         except Exception as exc:
-            recorder_inst._mark_failed(
-                job_id, _storage.now_iso(), _serialize_error(entry, exc)
-            )
+            recorder_inst._mark_failed(job_id, _storage.now_iso(), _serialize_error(entry, exc))
             raise
         try:
             _write_completion(recorder_inst, entry, job_id, key, result, ctx.buffer)
@@ -315,7 +312,10 @@ def _run_and_record(
                 "recorded[%s]: failed to serialize response from %s: %s. "
                 "Row %s marked failed; the wrapped function's return value "
                 "is propagated to the caller.",
-                entry.kind, entry.kind, exc, job_id,
+                entry.kind,
+                entry.kind,
+                exc,
+                job_id,
             )
         return result
     finally:
@@ -370,10 +370,11 @@ async def _run_and_record_async(
                 "recorded[%s]: failed to serialize response from %s: %s. "
                 "Row %s marked failed; the wrapped function's return value "
                 "is propagated to the caller.",
-                entry.kind, entry.kind, exc, job_id,
+                entry.kind,
+                entry.kind,
+                exc,
+                job_id,
             )
         return result
     finally:
         current_job.reset(token)
-
-

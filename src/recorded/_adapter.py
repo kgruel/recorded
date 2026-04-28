@@ -166,8 +166,7 @@ class _DataclassAdapter(Adapter):
                     value=value,
                 ) from exc
         raise SerializationError(
-            f"Cannot serialize {type(value).__name__} into "
-            f"dataclass slot {self.model.__name__}",
+            f"Cannot serialize {type(value).__name__} into dataclass slot {self.model.__name__}",
             model=self.model,
             value=value,
         )

@@ -53,9 +53,7 @@ class Job:
         Sections that are None/empty don't render — except Request,
         which is the audit anchor and always prints.
         """
-        duration = (
-            f"{self.duration_ms} ms" if self.duration_ms is not None else "—"
-        )
+        duration = f"{self.duration_ms} ms" if self.duration_ms is not None else "—"
         lines = [
             f"# {self.kind} — {self.status}",
             "",
@@ -92,6 +90,4 @@ _FENCE_BREAK = "``​`"
 
 
 def _pretty(value: Any) -> str:
-    return json.dumps(value, indent=2, sort_keys=False, default=str).replace(
-        "```", _FENCE_BREAK
-    )
+    return json.dumps(value, indent=2, sort_keys=False, default=str).replace("```", _FENCE_BREAK)

@@ -39,8 +39,10 @@ def test_reaper_marks_orphaned_running_rows_failed_on_start(db_path):
     """Named test: pre-seed a `running` row with stale `started_at`; the
     next `Recorder(...)` reaps it on construction."""
     stale_started = (
-        datetime.now(timezone.utc) - timedelta(minutes=10)
-    ).isoformat(timespec="microseconds").replace("+00:00", "Z")
+        (datetime.now(timezone.utc) - timedelta(minutes=10))
+        .isoformat(timespec="microseconds")
+        .replace("+00:00", "Z")
+    )
     job_id = _storage.new_id()
     _seed_running_row(db_path, job_id=job_id, started_at=stale_started)
 
@@ -99,8 +101,10 @@ def test_reaper_late_completion_silently_dropped(db_path):
     row stays `failed` with the reaper's `error_json`; the late
     `_mark_completed` no-ops because the conditional UPDATE doesn't match."""
     stale_started = (
-        datetime.now(timezone.utc) - timedelta(minutes=10)
-    ).isoformat(timespec="microseconds").replace("+00:00", "Z")
+        (datetime.now(timezone.utc) - timedelta(minutes=10))
+        .isoformat(timespec="microseconds")
+        .replace("+00:00", "Z")
+    )
     job_id = _storage.new_id()
     _seed_running_row(db_path, job_id=job_id, started_at=stale_started)
 
@@ -112,9 +116,7 @@ def test_reaper_late_completion_silently_dropped(db_path):
         assert job.status == _storage.STATUS_FAILED
 
         # Late completion: status is no longer 'running', UPDATE matches 0 rows.
-        rec._mark_completed(
-            job_id, _storage.now_iso(), '{"late": true}', None
-        )
+        rec._mark_completed(job_id, _storage.now_iso(), '{"late": true}', None)
         job_after = rec.get(job_id)
         assert job_after is not None
         assert job_after.status == _storage.STATUS_FAILED
@@ -139,8 +141,10 @@ def test_reaper_resolves_subscribers_for_reaped_jobs(db_path):
     are also in-process don't hang past the reap.
     """
     stale_started = (
-        datetime.now(timezone.utc) - timedelta(minutes=10)
-    ).isoformat(timespec="microseconds").replace("+00:00", "Z")
+        (datetime.now(timezone.utc) - timedelta(minutes=10))
+        .isoformat(timespec="microseconds")
+        .replace("+00:00", "Z")
+    )
     job_id = _storage.new_id()
     _seed_running_row(db_path, job_id=job_id, started_at=stale_started)
 

@@ -203,13 +203,12 @@ def test_worker_shutdown_warns_when_join_times_out(db_path, caplog, monkeypatch)
             worker.shutdown(timeout=0.05)
 
         warning_messages = [
-            r.getMessage() for r in caplog.records
-            if r.levelname == "WARNING"
-            and "recorded-worker did not drain" in r.getMessage()
+            r.getMessage()
+            for r in caplog.records
+            if r.levelname == "WARNING" and "recorded-worker did not drain" in r.getMessage()
         ]
         assert warning_messages, (
-            "expected join-timeout warning, got: "
-            f"{[r.getMessage() for r in caplog.records]}"
+            f"expected join-timeout warning, got: {[r.getMessage() for r in caplog.records]}"
         )
     finally:
         # Let the worker thread exit naturally before the test ends.
@@ -306,9 +305,7 @@ def test_worker_marks_unknown_kind_pending_row_as_failed(default_recorder):
     assert job.status == _storage.STATUS_FAILED
 
     # Error JSON shape: {type: "UnknownKind", message: "..."}
-    raw = rec._fetchone(
-        "SELECT error_json FROM jobs WHERE id=?", (unknown_id,)
-    )
+    raw = rec._fetchone("SELECT error_json FROM jobs WHERE id=?", (unknown_id,))
     err = json.loads(raw[0])
     assert err["type"] == "UnknownKind"
     assert "ext.unknown_in_this_process" in err["message"]
@@ -340,8 +337,11 @@ def test_worker_marks_claimed_row_failed_if_shutdown_fires_after_claim(db_path):
         # Pre-seed a pending row.
         target_id = _storage.new_id()
         rec._insert_pending(
-            target_id, "t.worker.claim_then_shutdown", None,
-            _storage.now_iso(), '"x"',
+            target_id,
+            "t.worker.claim_then_shutdown",
+            None,
+            _storage.now_iso(),
+            '"x"',
         )
 
         # Start the worker (lazy-start via submit of a different row that
@@ -365,9 +365,7 @@ def test_worker_marks_claimed_row_failed_if_shutdown_fires_after_claim(db_path):
             if row is not None and row[0] == target_id and not triggered.is_set():
                 triggered.set()
                 # Set the event from the worker's loop thread.
-                worker._loop.call_soon_threadsafe(
-                    worker._loop_shutdown.set
-                )
+                worker._loop.call_soon_threadsafe(worker._loop_shutdown.set)
                 # Tiny pause so the event-set is processed before the
                 # main loop's next is_set() check.
                 time.sleep(0.01)
@@ -397,9 +395,7 @@ def test_worker_marks_claimed_row_failed_if_shutdown_fires_after_claim(db_path):
         job = rec2.get(target_id)
         assert job is not None
         assert job.status == _storage.STATUS_FAILED
-        raw = rec2._fetchone(
-            "SELECT error_json FROM jobs WHERE id=?", (target_id,)
-        )
+        raw = rec2._fetchone("SELECT error_json FROM jobs WHERE id=?", (target_id,))
         err = json.loads(raw[0])
         assert err["type"] == "CancelledError"
     finally:

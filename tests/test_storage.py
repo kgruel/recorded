@@ -43,10 +43,7 @@ def test_ensure_schema_creates_jobs_table_and_indexes(db_path):
     assert mode.lower() == "wal"
 
     # partial unique index for active rows is in place
-    idx = {
-        row[1]
-        for row in conn.execute("PRAGMA index_list(jobs)").fetchall()
-    }
+    idx = {row[1] for row in conn.execute("PRAGMA index_list(jobs)").fetchall()}
     assert "idx_jobs_key_active" in idx
     assert "idx_jobs_status_kind" in idx
     assert "idx_jobs_kind_submitted" in idx

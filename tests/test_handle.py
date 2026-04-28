@@ -134,9 +134,7 @@ async def test_handle_wait_raises_row_disappeared_when_row_deleted(
     async def _delete_after_park():
         await asyncio.sleep(0.05)
         await asyncio.to_thread(
-            lambda: rec.connection().execute(
-                "DELETE FROM jobs WHERE id = ?", (job_id,)
-            ),
+            lambda: rec.connection().execute("DELETE FROM jobs WHERE id = ?", (job_id,)),
         )
 
     deleter = asyncio.create_task(_delete_after_park())
@@ -167,6 +165,7 @@ def test_handle_wait_sync_raises_row_disappeared_when_row_deleted(
     # Delete the row from another thread shortly after wait_sync parks.
     def _delete_after_park():
         import time
+
         time.sleep(0.05)
         rec.connection().execute("DELETE FROM jobs WHERE id = ?", (job_id,))
 

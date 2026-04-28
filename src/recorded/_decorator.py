@@ -145,9 +145,7 @@ def _build_async_wrapper(
         recorder_inst = get_default()
 
         if key is not None:
-            joined = await _async_try_join_existing(
-                recorder_inst, entry, key, retry_failed
-            )
+            joined = await _async_try_join_existing(recorder_inst, entry, key, retry_failed)
             if joined is not _NO_JOIN:
                 return joined
 
@@ -169,16 +167,12 @@ def _build_async_wrapper(
         except sqlite3.IntegrityError:
             # Lost the race against another caller after our pre-check;
             # fold into the existing row.
-            return await _async_wait_for_join(
-                recorder_inst, entry, key, retry_failed
-            )
+            return await _async_wait_for_join(recorder_inst, entry, key, retry_failed)
 
         async def _invoke() -> Any:
             return await fn(*args, **kwargs)
 
-        return await _run_and_record_async(
-            recorder_inst, entry, job_id, key, _invoke
-        )
+        return await _run_and_record_async(recorder_inst, entry, job_id, key, _invoke)
 
     typed = cast(_RecordedCallable, async_wrapper)
     _attach_call_modes(typed, fn, entry, is_async=True)
@@ -210,15 +204,11 @@ def _build_sync_wrapper(
         now = _storage.now_iso()
 
         try:
-            recorder_inst._insert_running(
-                job_id, entry.kind, key, now, now, request_json
-            )
+            recorder_inst._insert_running(job_id, entry.kind, key, now, now, request_json)
         except sqlite3.IntegrityError:
             return _wait_for_join(recorder_inst, entry, key, retry_failed)
 
-        return _run_and_record(
-            recorder_inst, entry, job_id, key, lambda: fn(*args, **kwargs)
-        )
+        return _run_and_record(recorder_inst, entry, job_id, key, lambda: fn(*args, **kwargs))
 
     typed = cast(_RecordedCallable, sync_wrapper)
     _attach_call_modes(typed, fn, entry, is_async=False)
@@ -245,6 +235,7 @@ def _attach_call_modes(
     """
 
     if is_async:
+
         def _sync(*args: Any, **kwargs: Any) -> Any:
             try:
                 asyncio.get_running_loop()
@@ -265,6 +256,7 @@ def _attach_call_modes(
         wrapper.sync = _sync
         wrapper.async_run = _async_run
     else:
+
         def _sync(*args: Any, **kwargs: Any) -> Any:
             # Already sync; just call the wrapper.
             return wrapper(*args, **kwargs)
@@ -302,9 +294,7 @@ def _attach_call_modes(
         request_json = _serialize_request(entry, captured_request)
         job_id = _storage.new_id()
         try:
-            recorder_inst._insert_pending(
-                job_id, entry.kind, key, _storage.now_iso(), request_json
-            )
+            recorder_inst._insert_pending(job_id, entry.kind, key, _storage.now_iso(), request_json)
         except sqlite3.IntegrityError:
             # Another caller beat us into the active slot. Recover by
             # joining the row that exists now.
@@ -411,7 +401,11 @@ def _wait_for_terminal_sync(
     fut = recorder_inst._subscribe(job_id)
     try:
         status = _wait_helper(
-            recorder_inst, fut, job_id, entry.kind, key,
+            recorder_inst,
+            fut,
+            job_id,
+            entry.kind,
+            key,
             recorder_inst.join_timeout_s,
         )
     finally:
@@ -431,14 +425,16 @@ async def _async_wait_for_terminal(
     fut = recorder_inst._subscribe(job_id)
     try:
         status = await _wait_helper(
-            recorder_inst, fut, job_id, entry.kind, key,
+            recorder_inst,
+            fut,
+            job_id,
+            entry.kind,
+            key,
             recorder_inst.join_timeout_s,
         )
     finally:
         recorder_inst._unsubscribe(job_id, fut)
-    return await asyncio.to_thread(
-        _resolve_terminal, recorder_inst, job_id, entry, key, status
-    )
+    return await asyncio.to_thread(_resolve_terminal, recorder_inst, job_id, entry, key, status)
 
 
 async def _async_try_join_existing(
@@ -447,9 +443,7 @@ async def _async_try_join_existing(
     key: str,
     retry_failed: bool,
 ) -> Any:
-    found = await asyncio.to_thread(
-        recorder_inst._lookup_active_by_kind_key, entry.kind, key
-    )
+    found = await asyncio.to_thread(recorder_inst._lookup_active_by_kind_key, entry.kind, key)
     if found is None:
         if not retry_failed:
             failed_id = await asyncio.to_thread(
@@ -478,9 +472,7 @@ async def _async_wait_for_join(
     retry_failed: bool,
 ) -> Any:
     assert key is not None
-    found = await asyncio.to_thread(
-        recorder_inst._lookup_active_by_kind_key, entry.kind, key
-    )
+    found = await asyncio.to_thread(recorder_inst._lookup_active_by_kind_key, entry.kind, key)
     if found is None:
         if not retry_failed:
             failed_id = await asyncio.to_thread(

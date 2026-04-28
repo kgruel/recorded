@@ -61,7 +61,10 @@ def _wait_for_terminal_sync(
         remaining = deadline - time.monotonic()
         if remaining <= 0:
             raise JoinTimeoutError(
-                kind=kind, key=key, sibling_job_id=job_id, timeout_s=timeout_s,
+                kind=kind,
+                key=key,
+                sibling_job_id=job_id,
+                timeout_s=timeout_s,
             )
         slice_s = min(remaining, NOTIFY_POLL_INTERVAL_S)
         try:
@@ -74,7 +77,9 @@ def _wait_for_terminal_sync(
                 return status
             if status is None:
                 raise RowDisappearedError(
-                    kind=kind, key=key, sibling_job_id=job_id,
+                    kind=kind,
+                    key=key,
+                    sibling_job_id=job_id,
                 ) from None
 
 
@@ -100,12 +105,16 @@ async def _wait_for_terminal_async(
         remaining = deadline - time.monotonic()
         if remaining <= 0:
             raise JoinTimeoutError(
-                kind=kind, key=key, sibling_job_id=job_id, timeout_s=timeout_s,
+                kind=kind,
+                key=key,
+                sibling_job_id=job_id,
+                timeout_s=timeout_s,
             )
         slice_s = min(remaining, NOTIFY_POLL_INTERVAL_S)
         try:
             return await asyncio.wait_for(
-                asyncio.shield(async_fut), timeout=slice_s,
+                asyncio.shield(async_fut),
+                timeout=slice_s,
             )
         except asyncio.TimeoutError:
             status = await asyncio.to_thread(recorder._row_status, job_id)
@@ -113,7 +122,9 @@ async def _wait_for_terminal_async(
                 return status
             if status is None:
                 raise RowDisappearedError(
-                    kind=kind, key=key, sibling_job_id=job_id,
+                    kind=kind,
+                    key=key,
+                    sibling_job_id=job_id,
                 ) from None
 
 
@@ -140,13 +151,16 @@ class JobHandle:
         return a `Job` for failure paths). Raises `JoinTimeoutError`
         (also a stdlib `TimeoutError`) if `timeout` elapses first.
         """
-        timeout_s = (
-            self._recorder.join_timeout_s if timeout is None else float(timeout)
-        )
+        timeout_s = self._recorder.join_timeout_s if timeout is None else float(timeout)
         fut = self._recorder._subscribe(self.job_id)
         try:
             status = await _wait_for_terminal_async(
-                self._recorder, fut, self.job_id, self._kind, None, timeout_s,
+                self._recorder,
+                fut,
+                self.job_id,
+                self._kind,
+                None,
+                timeout_s,
             )
         finally:
             self._recorder._unsubscribe(self.job_id, fut)
@@ -178,13 +192,16 @@ class JobHandle:
                 "event loop. Use `await handle.wait()` instead."
             )
 
-        timeout_s = (
-            self._recorder.join_timeout_s if timeout is None else float(timeout)
-        )
+        timeout_s = self._recorder.join_timeout_s if timeout is None else float(timeout)
         fut = self._recorder._subscribe(self.job_id)
         try:
             status = _wait_for_terminal_sync(
-                self._recorder, fut, self.job_id, self._kind, None, timeout_s,
+                self._recorder,
+                fut,
+                self.job_id,
+                self._kind,
+                None,
+                timeout_s,
             )
         finally:
             self._recorder._unsubscribe(self.job_id, fut)

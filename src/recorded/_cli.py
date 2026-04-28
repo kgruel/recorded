@@ -21,13 +21,7 @@ from ._types import Job
 
 # One-line row format used by `last` and `tail`.
 def _format_row(job: Job) -> str:
-    return (
-        f"{job.submitted_at} "
-        f"{job.status:9} "
-        f"{job.kind:30} "
-        f"{job.id[:8]} "
-        f"key={job.key or '-'}"
-    )
+    return f"{job.submitted_at} {job.status:9} {job.kind:30} {job.id[:8]} key={job.key or '-'}"
 
 
 def cmd_last(args, *, stdout: TextIO = sys.stdout) -> int:
@@ -105,9 +99,7 @@ def cmd_tail(
                 # so the set doesn't grow unboundedly.
                 if new_max != watermark:
                     watermark = new_max
-                    seen_ids = {
-                        j.id for j in rows if j.submitted_at == new_max
-                    }
+                    seen_ids = {j.id for j in rows if j.submitted_at == new_max}
                 time.sleep(args.interval)
         except KeyboardInterrupt:
             return 0
@@ -146,13 +138,9 @@ def build_parser() -> Any:
     _add_path(p_get)
     p_get.set_defaults(func=cmd_get)
 
-    p_tail = sub.add_parser(
-        "tail", help="Stream new terminal rows since a moving watermark."
-    )
+    p_tail = sub.add_parser("tail", help="Stream new terminal rows since a moving watermark.")
     p_tail.add_argument("--kind", default=None, help="Glob filter on kind.")
-    p_tail.add_argument(
-        "--interval", type=float, default=1.0, help="Poll interval seconds."
-    )
+    p_tail.add_argument("--interval", type=float, default=1.0, help="Poll interval seconds.")
     _add_path(p_tail)
     p_tail.set_defaults(func=cmd_tail)
 
