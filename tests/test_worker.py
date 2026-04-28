@@ -175,6 +175,49 @@ def test_recorder_shutdown_is_idempotent_and_drains_worker(db_path):
         rec2.shutdown()
 
 
+def test_worker_shutdown_warns_when_join_times_out(db_path, caplog, monkeypatch):
+    """If the worker thread cannot drain within `timeout`, `Worker.shutdown()`
+    must log a warning rather than returning silently — otherwise a stuck
+    worker is indistinguishable from a clean drain.
+
+    Force a stuck worker by monkey-patching `_main` to ignore the shutdown
+    event. A test-only `release` Event lets us clean up after the assertion.
+    """
+    import recorded._worker as _worker_mod
+
+    release = threading.Event()
+
+    async def hanging_main(self):
+        # Deliberately ignores `self._loop_shutdown`. Only `release` from
+        # the test ever lets this coroutine return.
+        while not release.is_set():
+            await asyncio.sleep(0.02)
+
+    monkeypatch.setattr(_worker_mod.Worker, "_main", hanging_main)
+
+    rec = Recorder(path=db_path)
+    try:
+        worker = rec._ensure_worker()
+        # Worker thread is now spinning in hanging_main.
+        with caplog.at_level("WARNING", logger="recorded"):
+            worker.shutdown(timeout=0.05)
+
+        warning_messages = [
+            r.getMessage() for r in caplog.records
+            if r.levelname == "WARNING"
+            and "recorded-worker did not drain" in r.getMessage()
+        ]
+        assert warning_messages, (
+            "expected join-timeout warning, got: "
+            f"{[r.getMessage() for r in caplog.records]}"
+        )
+    finally:
+        # Let the worker thread exit naturally before the test ends.
+        release.set()
+        # `shutdown()` is idempotent; this is for the connection only.
+        rec.shutdown()
+
+
 # ---- wait_sync inside a running loop raises -----------------------------
 
 

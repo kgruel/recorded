@@ -167,6 +167,119 @@ async def test_recorder_async_context_manager_bootstraps_and_shuts_down(tmp_path
 # --- atexit lifecycle ------------------------------------------------------
 
 
+def test_atexit_warns_when_direct_recorder_started_worker_but_never_shut_down(
+    tmp_path,
+):
+    """Subprocess: build a Recorder directly, submit (which lazy-starts the
+    worker), exit without `shutdown()`. The dirty-recorder atexit hook must
+    log a RuntimeWarning-shaped message warning about the daemon-thread
+    teardown hazard.
+    """
+    db = tmp_path / "jobs.db"
+    src = textwrap.dedent(
+        f"""
+        import logging, sys
+        # Surface "recorded" warnings on stderr so the parent test can see them.
+        logging.basicConfig(level=logging.WARNING, stream=sys.stderr,
+                            format="%(name)s %(levelname)s %(message)s")
+        import recorded
+        from recorded._recorder import Recorder
+        import recorded._recorder as _rec
+
+        r = Recorder(path={str(db)!r})
+        _rec._set_default(r)
+
+        @recorded.recorder(kind="t.dirty.exit")
+        def fn(x):
+            return {{"x": x}}
+
+        # Submit lazily starts the worker. Don't shutdown; exit dirty.
+        h = fn.submit(1)
+        """
+    )
+    proc = subprocess.run(
+        [sys.executable, "-c", src],
+        capture_output=True,
+        text=True,
+        timeout=10.0,
+    )
+    # Subprocess may exit nonzero due to the asyncio teardown race — the
+    # warning is what we care about.
+    assert "constructed directly but never shut down" in proc.stderr, (
+        f"expected dirty-recorder warning in stderr, got:\n{proc.stderr}"
+    )
+
+
+def test_atexit_does_not_warn_when_configure_is_used(tmp_path):
+    """Configured singleton has `atexit.register(shutdown)` registered AFTER
+    the dirty-recorder hook, so atexit-LIFO runs shutdown first. By the time
+    the warning hook runs, `_closed=True` and the warning is suppressed.
+    """
+    db = tmp_path / "jobs.db"
+    src = textwrap.dedent(
+        f"""
+        import logging, sys
+        logging.basicConfig(level=logging.WARNING, stream=sys.stderr,
+                            format="%(name)s %(levelname)s %(message)s")
+        import recorded
+        recorded.configure(path={str(db)!r})
+
+        @recorded.recorder(kind="t.cfg.clean")
+        def fn(x):
+            return {{"x": x}}
+
+        fn.submit(1)
+        """
+    )
+    proc = subprocess.run(
+        [sys.executable, "-c", src],
+        capture_output=True,
+        text=True,
+        timeout=10.0,
+    )
+    assert proc.returncode == 0, proc.stderr
+    assert "never shut down" not in proc.stderr, (
+        f"configure() singleton should not trigger dirty warning:\n"
+        f"{proc.stderr}"
+    )
+
+
+def test_atexit_does_not_warn_when_with_block_used(tmp_path):
+    """`with Recorder(...) as r:` calls shutdown via __exit__ before the
+    interpreter exit hook runs — no warning."""
+    db = tmp_path / "jobs.db"
+    src = textwrap.dedent(
+        f"""
+        import logging, sys
+        logging.basicConfig(level=logging.WARNING, stream=sys.stderr,
+                            format="%(name)s %(levelname)s %(message)s")
+        import recorded
+        from recorded import Recorder
+        import recorded._recorder as _rec
+
+        with Recorder(path={str(db)!r}) as r:
+            _rec._set_default(r)
+
+            @recorded.recorder(kind="t.with.clean")
+            def fn(x):
+                return {{"x": x}}
+
+            fn.submit(1)
+            # __exit__ on context manager calls shutdown before the atexit hook.
+        """
+    )
+    proc = subprocess.run(
+        [sys.executable, "-c", src],
+        capture_output=True,
+        text=True,
+        timeout=10.0,
+    )
+    assert "never shut down" not in proc.stderr, (
+        f"`with Recorder(...)` should not trigger dirty warning:\n"
+        f"{proc.stderr}"
+    )
+
+
 def test_atexit_runs_shutdown_on_configured_default_only(tmp_path):
     """A subprocess that calls `recorded.configure(path=p)` and exits
     cleanly should leave no stale SQLite WAL/SHM lock files behind, and

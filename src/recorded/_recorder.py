@@ -20,8 +20,10 @@ from __future__ import annotations
 import atexit
 import concurrent.futures
 import json
+import logging
 import sqlite3
 import threading
+import weakref
 from collections.abc import Iterator
 from datetime import datetime, timedelta, timezone
 from typing import Any
@@ -29,6 +31,8 @@ from typing import Any
 from . import _registry, _storage
 from ._errors import ConfigurationError, RecorderClosedError
 from ._types import Job, _parse_iso
+
+_logger = logging.getLogger("recorded")
 
 # Default join timeout for `JobHandle.wait()` / `wait_sync()`. Stream C
 # wires this through `recorded.configure(join_timeout_s=...)` and a per-call
@@ -57,6 +61,12 @@ class Recorder:
     `with` block, you are responsible for calling `shutdown()` (or using
     `with` / `async with`) before the interpreter exits — otherwise the
     worker thread can race against interpreter teardown.
+
+    A module-level atexit hook walks live (weak-referenced) Recorders and
+    logs a warning for any that started a worker but were never shut down.
+    Configured singletons run their `atexit.register(shutdown)` first
+    (LIFO order) and arrive at the warning hook with `_closed=True`, so the
+    warning targets only the dirty-direct-construction path.
 
     Use `recorded.configure(path=...)` for the managed-singleton pattern;
     use `with Recorder(path=...) as r:` (or `async with`) for explicit
@@ -113,6 +123,11 @@ class Recorder:
         # `_closed` and `_worker` live in the same partition — a shutdown
         # in flight can't race a concurrent `_ensure_worker()`.
         self._worker: Any | None = None  # _worker.Worker; avoids circular import
+
+        # Track this instance for the dirty-recorder atexit warning. WeakSet
+        # so test suites that build dozens of Recorders don't accumulate
+        # callback state — collected instances drop out automatically.
+        _LIVE_RECORDERS.add(self)
 
     # ----- connection lifecycle -----
 
@@ -605,6 +620,37 @@ def _normalize_iso(value: str | datetime) -> str:
 _default: Recorder | None = None
 _default_lock = threading.Lock()
 _atexit_registered_for: set[int] = set()
+
+
+# ----- dirty-recorder atexit warning ----------------------------------------
+
+_LIVE_RECORDERS: weakref.WeakSet[Recorder] = weakref.WeakSet()
+
+
+def _atexit_warn_dirty_recorders() -> None:
+    """Emit a warning at interpreter exit for any live Recorder that started a
+    worker but was never shut down. Configure-managed singletons register
+    `atexit.register(r.shutdown)` *after* this hook, and atexit runs LIFO, so
+    they are shut down first and arrive here with `_closed=True` (silent).
+
+    The hazard surfaced by this warning: a daemon worker thread killed by
+    interpreter teardown converts in-flight successes into CancelledError
+    rows — see WHY.md / direct-construction docstring.
+    """
+    for r in list(_LIVE_RECORDERS):
+        if r._worker is not None and not r._closed:
+            _logger.warning(
+                "recorded[%s]: Recorder was constructed directly but never "
+                "shut down before interpreter exit. The daemon worker thread "
+                "is being killed; in-flight results are recorded as "
+                "CancelledError rather than completed. Use `with "
+                "Recorder(...) as r:` (or `recorded.configure(...)` for the "
+                "managed-singleton pattern) so shutdown is guaranteed.",
+                r.path,
+            )
+
+
+atexit.register(_atexit_warn_dirty_recorders)
 
 
 def get_default() -> Recorder:

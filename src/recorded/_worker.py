@@ -21,6 +21,7 @@ from __future__ import annotations
 import asyncio
 import inspect
 import json
+import logging
 import threading
 from typing import TYPE_CHECKING
 
@@ -29,6 +30,8 @@ from ._lifecycle import make_error_json
 
 if TYPE_CHECKING:
     from ._recorder import Recorder
+
+_logger = logging.getLogger("recorded")
 
 
 # Error payload for tasks aborted by `Recorder.shutdown()`.
@@ -212,7 +215,13 @@ class Worker:
     # ----- shutdown -----
 
     def shutdown(self, *, timeout: float = 10.0) -> None:
-        """Idempotent: signal shutdown, cancel in-flight, join the thread."""
+        """Idempotent: signal shutdown, cancel in-flight, join the thread.
+
+        If the worker thread does not drain within `timeout`, emits a warning
+        rather than returning silently — the caller cannot otherwise tell
+        "drained cleanly" from "join timed out and the daemon thread is still
+        running and about to be killed at interpreter teardown."
+        """
         with self._lock:
             if self._shutdown_called:
                 return
@@ -229,6 +238,16 @@ class Worker:
 
         if self._thread is not None:
             self._thread.join(timeout=timeout)
+            if self._thread.is_alive():
+                _logger.warning(
+                    "recorded-worker did not drain within %.3fs. In-flight "
+                    "tasks remain on the daemon thread and may be killed at "
+                    "interpreter teardown — successful results in flight are "
+                    "lost (recorded as CancelledError if anything is recorded "
+                    "at all). Increase Worker.shutdown(timeout=) or shorten "
+                    "the wrapped function.",
+                    timeout,
+                )
 
 
 # ----- helpers ----------------------------------------------------------------
