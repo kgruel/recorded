@@ -131,7 +131,7 @@ The wrapper also exposes three call-mode attributes:
 |---|---|
 | `wrapper.sync(*args, **kw)` | invoke as sync, returning the natural value. |
 | `wrapper.async_run(*args, **kw)` | invoke as async, returning a coroutine. |
-| `wrapper.submit(*args, key=..., **kw)` | enqueue a `pending` row, return a `JobHandle`. See [workers](workers.md). |
+| `wrapper.submit(request, *, key=..., retry_failed=...)` | enqueue a `pending` row, return a `JobHandle`. Single positional argument only — see [workers](workers.md). |
 
 Plus diagnostic attributes: `wrapper.kind`, `wrapper._entry`,
 `wrapper._is_async`. The leading-underscore ones are not part of the API

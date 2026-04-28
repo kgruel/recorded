@@ -308,11 +308,10 @@ async def _heartbeat_loop(
 async def _execute_claimed_row(rec: Recorder, row: tuple) -> None:
     """Run the wrapped function for one claimed row.
 
-    Mirrors `_worker.Worker._execute` — same delegation to
-    `_run_and_record_async`, same UnknownKind handling for kinds whose
-    decorator wasn't imported in the leader process. Lives here (not
-    `_lifecycle.py`) so it disappears with `_worker.py` in step 6;
-    duplication is intentional and bounded.
+    Delegates to `_run_and_record_async` for the universal serialize-
+    validate-record flow, with UnknownKind handling for kinds whose
+    decorator wasn't imported in the leader process (the operator must
+    pass `--import package.module` so `@recorder` decorations register).
     """
     (
         job_id,

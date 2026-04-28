@@ -76,6 +76,23 @@ class Recorder:
         leader_heartbeat_s: float = _storage.DEFAULT_LEADER_HEARTBEAT_S,
         leader_stale_s: float = _storage.DEFAULT_LEADER_STALE_S,
     ) -> None:
+        # Threshold ordering invariant — loud failure on misconfiguration.
+        # The leader heartbeats every `leader_heartbeat_s`; a fresh row is
+        # one whose `started_at` is within `leader_stale_s`; the reaper
+        # flips to `failed` only after `reaper_threshold_s`. Any reorder
+        # produces silent footguns: heartbeat ≥ stale → `is_leader_running`
+        # flickers False between refreshes and `.submit()` raises spuriously;
+        # stale ≥ reaper → the reaper kills our row before we'd notice it
+        # was stale, defeating the resurrection re-claim path.
+        if not (leader_heartbeat_s < leader_stale_s < reaper_threshold_s):
+            raise ConfigurationError(
+                "Recorder threshold ordering violated: must satisfy "
+                "leader_heartbeat_s < leader_stale_s < reaper_threshold_s. "
+                f"Got leader_heartbeat_s={leader_heartbeat_s}, "
+                f"leader_stale_s={leader_stale_s}, "
+                f"reaper_threshold_s={reaper_threshold_s}."
+            )
+
         self.path = path
         self.reaper_threshold_s = reaper_threshold_s
         self.worker_poll_interval_s = worker_poll_interval_s
@@ -131,9 +148,11 @@ class Recorder:
     def _connection(self) -> sqlite3.Connection:
         with self._lock:
             # If the connection is already open, return it even when
-            # `_closed=True`. This lets in-flight worker tasks finish their
-            # `_mark_failed` writes during shutdown's drain phase. New
-            # connection inits are still blocked by `_closed`.
+            # `_closed=True`. This lets in-flight async/background tasks
+            # finish their `_mark_failed` writes during shutdown's drain
+            # phase (e.g. the leader process draining its in-flight
+            # `_execute_claimed_row` tasks before exit). New connection
+            # inits are still blocked by `_closed`.
             if self._conn is not None:
                 return self._conn
             if self._closed:
@@ -359,7 +378,8 @@ class Recorder:
         """Bare-call insert: row enters as `running` in one write.
 
         The caller is about to execute the function itself, so the row
-        never occupies `pending`. Worker can never claim it.
+        never occupies `pending`. The leader's `_claim_one` only matches
+        `pending` rows, so it can't claim a bare-call row.
         """
         self._execute(
             _storage.INSERT_RUNNING,
@@ -734,6 +754,8 @@ def configure(
     worker_poll_interval_s: float | None = None,
     join_timeout_s: float | None = None,
     warn_on_data_drift: bool | None = None,
+    leader_heartbeat_s: float | None = None,
+    leader_stale_s: float | None = None,
 ) -> Recorder:
     """Configure the module-level default `Recorder`. Configure-once.
 
@@ -769,6 +791,10 @@ def configure(
             kwargs["join_timeout_s"] = join_timeout_s
         if warn_on_data_drift is not None:
             kwargs["warn_on_data_drift"] = warn_on_data_drift
+        if leader_heartbeat_s is not None:
+            kwargs["leader_heartbeat_s"] = leader_heartbeat_s
+        if leader_stale_s is not None:
+            kwargs["leader_stale_s"] = leader_stale_s
         r = Recorder(**kwargs)
         _default = r
         # Only the *configured* default registers atexit — direct

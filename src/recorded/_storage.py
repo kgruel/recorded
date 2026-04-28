@@ -84,14 +84,15 @@ VALUES (?, ?, ?, 'pending', ?, ?)
 
 # Bare-call path inserts directly as 'running' in one atomic write — the
 # caller is about to execute the function itself, so there's no `pending`
-# state to occupy. Keeps `pending` exclusively as "queued for the worker"
-# and removes the race window where the worker could claim a bare-call row.
+# state to occupy. Keeps `pending` exclusively as "queued for the leader
+# process" and removes the race window where the leader could claim a
+# bare-call row.
 INSERT_RUNNING = """
 INSERT INTO jobs (id, kind, key, status, submitted_at, started_at, request_json)
 VALUES (?, ?, ?, 'running', ?, ?, ?)
 """
 
-# Test-only: the worker's CLAIM_ONE handles `pending → running` atomically
+# Test-only: the leader's CLAIM_ONE handles `pending → running` atomically
 # in production; this UPDATE is retained for test fixtures that seed rows
 # at a specific status. Not used by any production code path.
 UPDATE_RUNNING = """
@@ -173,9 +174,9 @@ def new_id() -> str:
 def open_connection(path: str) -> sqlite3.Connection:
     """Open a connection in WAL mode with sane defaults.
 
-    `check_same_thread=False` because the worker (phase 2) and any
-    `asyncio.to_thread` call use the connection from helper threads.
-    Concurrency is serialized at the SQLite level (WAL).
+    `check_same_thread=False` because `asyncio.to_thread` calls (and the
+    leader's claim/heartbeat threads) use the connection from helper
+    threads. Concurrency is serialized at the SQLite level (WAL).
     """
     conn = sqlite3.connect(path, check_same_thread=False, isolation_level=None)
     conn.execute("PRAGMA journal_mode=WAL")

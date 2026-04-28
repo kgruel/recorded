@@ -10,3 +10,8 @@ dist/
 build/
 .coverage
 .subtask/
+
+# Session artifacts from /autoresearch:predict + debug swarms.
+# RESOLUTION.md content is mirrored into HANDOFF.md when relevant.
+debug/
+predict/

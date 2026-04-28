@@ -57,9 +57,16 @@ handle = build_report.submit(spec, key="daily-2026-04-27")
 # returns immediately; build_report has not yet run.
 ```
 
-`.submit(...)` accepts the same positional arguments as the wrapped function,
-plus `key=` and `retry_failed=`. It first checks that a leader is running
-(`is_leader_running()`), then writes a `pending` row and returns a `JobHandle`.
+`.submit(...)` requires a **single positional argument** (the request),
+plus optional `key=` and `retry_failed=` keywords. It first checks that
+a leader is running (`is_leader_running()`), then writes a `pending` row
+and returns a `JobHandle`. Multi-argument and keyword-only call shapes
+are rejected: the cross-process envelope must be reconstructable by the
+leader, which is straightforward for one positional value and ambiguous
+otherwise. For multi-argument functions, define a `request=Model` that
+captures the call shape and pass that one model instance to `.submit()`,
+or use the bare-call form (in-process execution, accepts the function's
+native call shape).
 
 If the call site collides with an active key, `.submit()` returns a `JobHandle`
 over the existing row instead of inserting a new one — same idempotency

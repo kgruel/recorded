@@ -3,8 +3,7 @@
 The leader process (`python -m recorded run`) inserts a single
 `_recorded.leader` row keyed by `host:pid` on startup, and updates its
 `started_at` periodically as a liveness signal. `Recorder.is_leader_running()`
-checks for any fresh row of this kind; `.submit()` will gate on that
-(step 5 of the worker dissolution).
+checks for any fresh row of this kind; `.submit()` gates on it.
 
 Pinned here:
 
@@ -19,6 +18,7 @@ Pinned here:
 - Multiple distinct `host:pid` leaders coexist.
 - `_release_leader_slot` is the graceful-shutdown counterpart.
 - `_recorded.leader` rows do not appear in default `query()`/`last()`.
+- Threshold ordering invariant is enforced at `Recorder.__init__`.
 """
 
 from __future__ import annotations
@@ -76,7 +76,12 @@ def test_public_is_leader_running_alias(recorder: Recorder):
 
 def test_is_leader_running_false_when_heartbeat_is_stale(db_path):
     """A `_recorded.leader` row with old `started_at` is not "fresh"."""
-    rec = Recorder(path=db_path, leader_stale_s=2.0, reaper_threshold_s=600.0)
+    rec = Recorder(
+        path=db_path,
+        leader_heartbeat_s=0.5,
+        leader_stale_s=2.0,
+        reaper_threshold_s=600.0,
+    )
     try:
         # Manually insert a leader row with started_at well outside the
         # 2.0s staleness window.
@@ -262,3 +267,54 @@ def test_heartbeat_rows_excluded_from_default_query(default_recorder):
     leader_rows = list(recorded.query(kind="_recorded.*"))
     assert len(leader_rows) == 1
     assert leader_rows[0].kind == _storage.LEADER_KIND
+
+
+# ----- threshold ordering invariant -----------------------------------------
+
+
+def test_threshold_ordering_accepts_defaults(tmp_path):
+    """Defaults must satisfy heartbeat < stale < reaper."""
+    db = tmp_path / "jobs.db"
+    r = Recorder(path=str(db))
+    try:
+        assert r.leader_heartbeat_s < r.leader_stale_s < r.reaper_threshold_s
+    finally:
+        r.shutdown()
+
+
+def test_threshold_ordering_rejects_heartbeat_ge_stale(tmp_path):
+    """A user setting heartbeat >= stale would see is_leader_running()
+    flicker False between refreshes — must fail loud at construction."""
+    import pytest
+
+    from recorded import ConfigurationError
+
+    db = tmp_path / "jobs.db"
+    with pytest.raises(ConfigurationError, match="threshold ordering"):
+        Recorder(path=str(db), leader_heartbeat_s=30.0, leader_stale_s=30.0)
+    with pytest.raises(ConfigurationError, match="threshold ordering"):
+        Recorder(path=str(db), leader_heartbeat_s=60.0, leader_stale_s=30.0)
+
+
+def test_threshold_ordering_rejects_stale_ge_reaper(tmp_path):
+    """A user setting stale >= reaper would have the reaper kill our row
+    before we'd notice it was stale — must fail loud at construction."""
+    import pytest
+
+    from recorded import ConfigurationError
+
+    db = tmp_path / "jobs.db"
+    with pytest.raises(ConfigurationError, match="threshold ordering"):
+        Recorder(
+            path=str(db),
+            leader_heartbeat_s=5.0,
+            leader_stale_s=300.0,
+            reaper_threshold_s=300.0,
+        )
+    with pytest.raises(ConfigurationError, match="threshold ordering"):
+        Recorder(
+            path=str(db),
+            leader_heartbeat_s=5.0,
+            leader_stale_s=600.0,
+            reaper_threshold_s=300.0,
+        )

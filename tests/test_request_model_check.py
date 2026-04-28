@@ -58,14 +58,16 @@ def test_submit_with_multi_positional_args_raises_configuration_error(
     default_recorder,
 ):
     """`.submit()` round-trips the captured request through JSON to the
-    worker. Multi-arg / kwarg envelopes can't be unpacked unambiguously
-    on the worker side, so the surface refuses them at submit time."""
+    leader. Multi-arg / kwarg envelopes can't be unpacked unambiguously
+    on the leader side, so the surface refuses them at submit time."""
 
     @recorder(kind="t.submit.multi_args")
     def fn(a, b):
         return {"a": a, "b": b}
 
-    with pytest.raises(ConfigurationError, match=r"\.submit\(\) requires single-positional-arg"):
+    with pytest.raises(
+        ConfigurationError, match=r"\.submit\(\) requires a single positional argument"
+    ):
         fn.submit(1, 2)
 
 
@@ -74,7 +76,9 @@ def test_submit_with_kwargs_raises_configuration_error(default_recorder):
     def fn(req, *, extra=None):
         return {"req": req, "extra": extra}
 
-    with pytest.raises(ConfigurationError, match=r"\.submit\(\) requires single-positional-arg"):
+    with pytest.raises(
+        ConfigurationError, match=r"\.submit\(\) requires a single positional argument"
+    ):
         fn.submit("hello", extra="x")
 
 

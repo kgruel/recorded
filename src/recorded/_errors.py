@@ -40,8 +40,9 @@ class RecordedWarning(RuntimeWarning):
 
     Policy (see `docs/HOW.md::Warnings policy`):
 
-    - **Lifecycle / usage hazards** (e.g. dirty-recorder at exit, worker
-      drain timeout) emit BOTH a `_logger.warning(...)` AND a
+    - **Lifecycle / usage hazards** (e.g. dirty-recorder at exit, leader
+      shutdown drain timeout, leader heartbeat resurrection) emit BOTH a
+      `_logger.warning(...)` AND a
       `warnings.warn(..., RecordedWarning)`. Logger covers structured-
       logging deployments; warnings.warn covers test-discipline users
       (`pytest -W error`) and interactive surfacing.

@@ -1,10 +1,10 @@
-"""Recording machinery shared between bare-call and worker.
+"""Recording machinery shared between bare-call and leader execution.
 
-Both bare-call (sync and async wrappers in `_decorator`) and the worker
-(`_worker._execute`) delegate into this layer for the universal
-serialize-validate-record flow. Holds the helpers that don't belong in
-`_decorator` (which is the call-site spine) or `_worker` (which is the
-event-loop driver).
+Both bare-call (sync and async wrappers in `_decorator`) and the leader
+process (`_cli._execute_claimed_row`) delegate into this layer for the
+universal serialize-validate-record flow. Holds the helpers that don't
+belong in `_decorator` (which is the call-site spine) or `_cli` (which
+is the leader's event-loop driver).
 
 Contents:
 - `make_error_json`: single source of truth for `{type, message}` JSON.
@@ -40,7 +40,7 @@ if TYPE_CHECKING:
 def make_error_json(type_: str, message: str) -> str:
     """Single source of truth for the `{type, message}` JSON shape used by
     every error writer (`_serialize_error`, `_serialize_recording_failure`,
-    the worker's cancel marker, the unknown-kind marker, the reaper).
+    the leader's cancel marker, the unknown-kind marker, the reaper).
 
     Consumers like `JoinedSiblingFailedError` read `.message` to format
     their string; any other key is silently dropped.
@@ -76,13 +76,14 @@ def _validate_call_args(
        the `key=` + auto-kind precedent: misuse caught at call time, not
        silently mis-recorded.
 
-    3. `.submit()` against a multi-argument call shape (with or without
-       `request=Model`). The worker reconstructs the call from the stored
-       request envelope; round-tripping `{args, kwargs}` and unpacking
-       it generically can collide with naturally-shaped dicts. Multi-arg
-       `.submit()` requires a `request=Model` that defines the call's
-       shape, OR use the bare-call form (which has the live args and
-       never round-trips).
+    3. `.submit()` against a multi-argument call shape. The leader process
+       reconstructs the call from the stored request envelope; round-
+       tripping `{args, kwargs}` and unpacking it generically can collide
+       with naturally-shaped dicts. `.submit()` therefore requires a
+       single positional argument, full stop. For multi-argument
+       functions, define a `request=Model` that captures the call shape
+       and pass that one model instance, or use the bare-call form
+       (which has the live args and never round-trips).
     """
     if key is not None and entry.auto_kind:
         raise ConfigurationError(
@@ -102,10 +103,11 @@ def _validate_call_args(
         kw = kwargs or {}
         if len(args) != 1 or kw:
             raise ConfigurationError(
-                f"{entry.kind}: .submit() requires single-positional-arg "
-                f"call shape; got args={len(args)}, kwargs={list(kw)}. "
-                "Wrap multi-arg signatures with request=Model so the worker "
-                "can reconstruct the call, or use the bare call form."
+                f"{entry.kind}: .submit() requires a single positional "
+                f"argument; got args={len(args)}, kwargs={list(kw)}. "
+                "Define a request=Model that captures your call shape and "
+                "pass that one model instance, or use the bare-call form "
+                "for in-process execution with the native call shape."
             )
 
 
@@ -330,7 +332,7 @@ async def _run_and_record_async(
     invoke: Any,  # 0-arg callable returning an awaitable of the fn's result
 ) -> Any:
     """Async variant of `_run_and_record`. Used by the bare-call async
-    wrapper and the worker.
+    wrapper and the leader's `_execute_claimed_row`.
 
     `invoke` is a 0-arg callable returning a coroutine (or any awaitable).
     SQL writes go through `asyncio.to_thread` so they don't block the loop.

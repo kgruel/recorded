@@ -1,7 +1,7 @@
 """recorded — typed function-call recorder backed by SQLite.
 
 Public surface:
-    - `Recorder` class (connection, lifecycle, read API, worker, reaper)
+    - `Recorder` class (connection, lifecycle, read API, leader heartbeat, reaper)
     - `recorder` decorator
     - `attach(key, value, *, flush=False)` for mid-execution annotations
     - `attach_error(payload)` for structured error payloads on the failure path
@@ -14,7 +14,7 @@ Public surface:
 from __future__ import annotations
 
 import sqlite3
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence
 from datetime import datetime
 from typing import Any
 
@@ -55,7 +55,7 @@ def last(
 
 def query(
     kind: str | None = None,
-    status: str | None = None,
+    status: str | Sequence[str] | None = None,
     key: str | None = None,
     since: str | datetime | None = None,
     until: str | datetime | None = None,
@@ -63,7 +63,12 @@ def query(
     limit: int = 100,
     order: str = "desc",
 ) -> Iterator[Job]:
-    """Filtered iterator over jobs from the default Recorder."""
+    """Filtered iterator over jobs from the default Recorder.
+
+    `status` accepts a single value (`"completed"`) or any sequence
+    (`("completed", "failed")`) — see `Recorder.query` for the full
+    surface.
+    """
     return get_default().query(
         kind=kind,
         status=status,

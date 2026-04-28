@@ -97,7 +97,7 @@ check.
 
 > Deeper: [usage/workers.md](docs/usage/workers.md).
 
-## Queryable projections — `data=Model` + `recorded.list(...)`
+## Queryable projections — `data=Model` + `recorded.query(...)`
 
 ```python
 class OrderView(BaseModel):
@@ -129,12 +129,12 @@ skip to the one you need.
 |---|---|
 | [usage/decorator.md](docs/usage/decorator.md) | the decorator, sync vs async, cross-mode shims |
 | [usage/configuration.md](docs/usage/configuration.md) | `configure()`, lifecycles, multi-recorder safety |
-| [usage/reading.md](docs/usage/reading.md) | `last`, `get`, `list`, `connection`, the CLI |
+| [usage/reading.md](docs/usage/reading.md) | `last`, `get`, `query`, `connection`, the CLI |
 | [usage/idempotency.md](docs/usage/idempotency.md) | `key=`, `retry_failed`, the partial-unique-index trick |
 | [usage/workers.md](docs/usage/workers.md) | `.submit()`, the leader process, the reaper |
 | [usage/typed-slots.md](docs/usage/typed-slots.md) | the four slots, `attach()`, `attach_error()` |
 | [usage/fastapi.md](docs/usage/fastapi.md) | lifespan integration, `capture_request`, two-shape pattern |
-| [usage/queries.md](docs/usage/queries.md) | `recorded.list(...)`, raw SQL, `Job.to_prompt()` |
+| [usage/queries.md](docs/usage/queries.md) | `recorded.query(...)`, raw SQL, `Job.to_prompt()` |
 | [usage/errors.md](docs/usage/errors.md) | exception hierarchy, what to catch where |
 
 Or jump in by need — see the [usage guide index](docs/usage/README.md).

@@ -62,7 +62,7 @@ def test_submit_validation_error_takes_precedence_over_leader_gate(default_recor
     def fn(a, b):
         return {"a": a, "b": b}
 
-    with pytest.raises(ConfigurationError, match=r"requires single-positional-arg"):
+    with pytest.raises(ConfigurationError, match=r"requires a single positional argument"):
         fn.submit(1, 2)
 
 

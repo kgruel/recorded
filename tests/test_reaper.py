@@ -81,12 +81,24 @@ def test_reaper_leaves_recent_running_rows_alone(db_path):
 
 
 def test_reaper_threshold_configurable_via_keyword(db_path):
-    """`Recorder(reaper_threshold_s=0)` reaps every `running` row."""
-    fresh_started = _storage.now_iso()
+    """`Recorder(reaper_threshold_s=...)` is honored: a row 10s old is
+    reaped under a 5s threshold, untouched under a 60s threshold."""
+    stale_started = (
+        (datetime.now(timezone.utc) - timedelta(seconds=10))
+        .isoformat(timespec="microseconds")
+        .replace("+00:00", "Z")
+    )
     job_id = _storage.new_id()
-    _seed_running_row(db_path, job_id=job_id, started_at=fresh_started)
+    _seed_running_row(db_path, job_id=job_id, started_at=stale_started)
 
-    rec = Recorder(path=db_path, reaper_threshold_s=0.0)
+    # Threshold ordering invariant requires heartbeat < stale < reaper,
+    # so scale all three down together.
+    rec = Recorder(
+        path=db_path,
+        leader_heartbeat_s=0.5,
+        leader_stale_s=1.0,
+        reaper_threshold_s=5.0,
+    )
     try:
         rec.connection()
         job = rec.get(job_id)

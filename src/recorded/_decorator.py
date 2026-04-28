@@ -5,8 +5,10 @@ Three pieces, woven together:
 1. Decoration registers metadata in `_registry` and returns a wrapper
    that preserves the wrapped function's calling convention (sync stays
    sync, async stays async).
-2. Each call drives the three-write lifecycle inline (no worker):
-   `insert pending → update running → execute → update terminal`.
+2. Each bare call drives the lifecycle inline (no leader queue):
+   `insert running → execute → update terminal`. `.submit()` takes the
+   cross-process path: `insert pending`, return a `JobHandle`, leader
+   claims and executes.
 3. The `key=` / `retry_failed=` kwargs are reserved at every call surface
    and stripped from what we forward to the wrapped function.
 
@@ -239,8 +241,8 @@ def _attach_call_modes(
     """Attach `.sync`, `.async_run`, `.submit` to the wrapper.
 
     `.submit(req)` inserts a `pending` row and returns a `JobHandle`; the
-    worker (lazy-started on first submit) picks it up. `.sync()` and
-    `.async_run()` cross between sync and async call modes.
+    leader process (`python -m recorded run`) claims and executes it.
+    `.sync()` and `.async_run()` cross between sync and async call modes.
     """
 
     if is_async:
