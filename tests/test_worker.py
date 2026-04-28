@@ -139,7 +139,7 @@ def test_recorder_shutdown_is_idempotent_and_drains_worker(db_path):
     rec = Recorder(path=db_path)
     from recorded import _recorder as _recorder_mod
 
-    _recorder_mod._set_default(rec)
+    _recorder_mod._set_default_for_testing(rec)
 
     proceed = threading.Event()
 
@@ -159,7 +159,7 @@ def test_recorder_shutdown_is_idempotent_and_drains_worker(db_path):
         rec.shutdown()  # idempotent
     finally:
         proceed.set()
-        _recorder_mod._set_default(None)
+        _recorder_mod._set_default_for_testing(None)
 
     # Worker thread is gone after shutdown.
     assert "recorded-worker" not in {t.name for t in threading.enumerate()}
@@ -330,7 +330,7 @@ def test_worker_marks_claimed_row_failed_if_shutdown_fires_after_claim(db_path):
     rec = Recorder(path=db_path)
     from recorded import _recorder as _recorder_mod
 
-    _recorder_mod._set_default(rec)
+    _recorder_mod._set_default_for_testing(rec)
 
     @recorder(kind="t.worker.claim_then_shutdown")
     def fn(x):
@@ -388,7 +388,7 @@ def test_worker_marks_claimed_row_failed_if_shutdown_fires_after_claim(db_path):
         # Don't assert thread-gone yet — shutdown() will join below.
     finally:
         rec.shutdown()
-        _recorder_mod._set_default(None)
+        _recorder_mod._set_default_for_testing(None)
 
     # Verify the seeded row was marked failed with the cancel-marker shape
     # (not left at `running`).

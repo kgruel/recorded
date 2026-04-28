@@ -194,7 +194,7 @@ def test_drift_warning_silenced_when_attach_populates(default_recorder, drift_ca
 def test_drift_warning_disabled_via_recorder_flag(db_path, drift_caplog):
     """Recorder(warn_on_data_drift=False) suppresses the warning."""
     r = Recorder(path=db_path, warn_on_data_drift=False)
-    _recorder_mod._set_default(r)
+    _recorder_mod._set_default_for_testing(r)
     try:
 
         @recorder(kind="t.drift.disabled", data=OrderViewPyd)
@@ -209,7 +209,7 @@ def test_drift_warning_disabled_via_recorder_flag(db_path, drift_caplog):
         ]
         assert warnings == []
     finally:
-        _recorder_mod._set_default(None)
+        _recorder_mod._set_default_for_testing(None)
         r.shutdown()
 
 
@@ -419,12 +419,12 @@ def test_per_recorder_dedup_no_cross_contamination(db_path, drift_caplog):
         return 42
 
     r1 = Recorder(path=db_path)
-    _recorder_mod._set_default(r1)
+    _recorder_mod._set_default_for_testing(r1)
     try:
         fn({})
         fn({})  # second call same recorder — silent
     finally:
-        _recorder_mod._set_default(None)
+        _recorder_mod._set_default_for_testing(None)
         r1.shutdown()
 
     warnings_r1 = [
@@ -436,11 +436,11 @@ def test_per_recorder_dedup_no_cross_contamination(db_path, drift_caplog):
     drift_caplog.clear()
 
     r2 = Recorder(path=db_path)
-    _recorder_mod._set_default(r2)
+    _recorder_mod._set_default_for_testing(r2)
     try:
         fn({})  # fresh Recorder — should warn again
     finally:
-        _recorder_mod._set_default(None)
+        _recorder_mod._set_default_for_testing(None)
         r2.shutdown()
 
     warnings_r2 = [
@@ -484,9 +484,9 @@ def test_configure_warn_on_data_drift_forwarded(monkeypatch, db_path, drift_capl
 def recorder_for_submit(db_path):
     """A Recorder installed as default that supports .submit() (worker path)."""
     r = Recorder(path=db_path)
-    _recorder_mod._set_default(r)
+    _recorder_mod._set_default_for_testing(r)
     try:
         yield r
     finally:
-        _recorder_mod._set_default(None)
+        _recorder_mod._set_default_for_testing(None)
         r.shutdown()

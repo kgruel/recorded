@@ -27,9 +27,9 @@ from recorded._errors import JoinTimeoutError
 def _clean_default():
     """Clear `_default` before/after each test so `configure-once` semantics
     don't bleed across tests in this file."""
-    _recorder_mod._set_default(None)
+    _recorder_mod._set_default_for_testing(None)
     yield
-    _recorder_mod._set_default(None)
+    _recorder_mod._set_default_for_testing(None)
 
 
 # --- configure() -----------------------------------------------------------
@@ -48,7 +48,7 @@ def test_configure_returns_recorder_with_given_path(tmp_path):
 def test_configure_is_no_op_after_first_call(tmp_path):
     """Configure-once: a second `configure(...)` returns the existing
     default unchanged. Tests bypass via explicit `Recorder(...)` (or the
-    `_set_default` test hook used by other fixtures)."""
+    `_set_default_for_testing` test hook used by other fixtures)."""
     db1 = str(tmp_path / "first.db")
     db2 = str(tmp_path / "second.db")
     r1 = recorded.configure(path=db1)
@@ -187,7 +187,7 @@ def test_atexit_warns_when_direct_recorder_started_worker_but_never_shut_down(
         import recorded._recorder as _rec
 
         r = Recorder(path={str(db)!r})
-        _rec._set_default(r)
+        _rec._set_default_for_testing(r)
 
         @recorded.recorder(kind="t.dirty.exit")
         def fn(x):
@@ -258,7 +258,7 @@ def test_atexit_does_not_warn_when_with_block_used(tmp_path):
         import recorded._recorder as _rec
 
         with Recorder(path={str(db)!r}) as r:
-            _rec._set_default(r)
+            _rec._set_default_for_testing(r)
 
             @recorded.recorder(kind="t.with.clean")
             def fn(x):

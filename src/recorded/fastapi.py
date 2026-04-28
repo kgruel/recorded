@@ -125,8 +125,11 @@ async def capture_request(
             raw_body = raw_body[:max_body_bytes]
         # Re-prime Starlette's body cache so downstream handlers reading
         # `request.body()` see the (possibly truncated) content rather than
-        # raising on the consumed stream. Best-effort: non-Starlette ducks
-        # silently skip.
+        # raising on the consumed stream. Couples to a Starlette private
+        # attribute (`_body`); the try/except covers non-Starlette duck
+        # types. If Starlette ever renames `_body` or moves to __slots__
+        # this falls through silently — downstream body() calls would
+        # fail in user code rather than here.
         try:
             request._body = raw_body
         except (AttributeError, TypeError):

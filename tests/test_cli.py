@@ -40,7 +40,7 @@ def seeded_db_path(tmp_path):
     """
     db_path = str(tmp_path / "jobs.db")
     r = Recorder(path=db_path)
-    _recorder_mod._set_default(r)
+    _recorder_mod._set_default_for_testing(r)
     try:
         import asyncio
 
@@ -71,7 +71,7 @@ def seeded_db_path(tmp_path):
 
         asyncio.run(seed())
     finally:
-        _recorder_mod._set_default(None)
+        _recorder_mod._set_default_for_testing(None)
         r.shutdown()
     return db_path
 
@@ -187,7 +187,7 @@ def test_cli_tail_emits_new_terminal_rows_after_watermark(tmp_path):
 
     # Pre-existing rows that should NOT show up in tail (created before launch).
     r0 = Recorder(path=db_path)
-    _recorder_mod._set_default(r0)
+    _recorder_mod._set_default_for_testing(r0)
     try:
         import asyncio
 
@@ -201,7 +201,7 @@ def test_cli_tail_emits_new_terminal_rows_after_watermark(tmp_path):
 
         asyncio.run(s())
     finally:
-        _recorder_mod._set_default(None)
+        _recorder_mod._set_default_for_testing(None)
         r0.shutdown()
 
     # Launch tail with a snappy interval.
@@ -227,7 +227,7 @@ def test_cli_tail_emits_new_terminal_rows_after_watermark(tmp_path):
 
         # Now write NEW rows after tail's watermark was set.
         r1 = Recorder(path=db_path)
-        _recorder_mod._set_default(r1)
+        _recorder_mod._set_default_for_testing(r1)
         try:
             import asyncio
 
@@ -241,7 +241,7 @@ def test_cli_tail_emits_new_terminal_rows_after_watermark(tmp_path):
 
             asyncio.run(s())
         finally:
-            _recorder_mod._set_default(None)
+            _recorder_mod._set_default_for_testing(None)
             r1.shutdown()
 
         # Wait for the poll loop to flush.
@@ -303,7 +303,7 @@ def test_cli_path_flag_targets_an_explicit_db_file(tmp_path):
     custom = str(tmp_path / "custom_jobs.db")
 
     r = Recorder(path=custom)
-    _recorder_mod._set_default(r)
+    _recorder_mod._set_default_for_testing(r)
     try:
         import asyncio
 
@@ -313,7 +313,7 @@ def test_cli_path_flag_targets_an_explicit_db_file(tmp_path):
 
         asyncio.run(fn(99))
     finally:
-        _recorder_mod._set_default(None)
+        _recorder_mod._set_default_for_testing(None)
         r.shutdown()
 
     # Run from a working directory where ./jobs.db doesn't exist; if --path

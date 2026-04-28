@@ -365,6 +365,33 @@ Bootstraps the connection (and reaper sweep) on enter, shuts down
 `Recorder.shutdown()` is idempotent — atexit + explicit shutdown can
 both fire safely.
 
+## Deployment checklist
+
+`recorded` runs in-process against a SQLite WAL database. Two operational
+constraints apply:
+
+- **Same-host storage.** SQLite WAL relies on shared-memory mmap on a
+  single host. Network filesystems (NFS, EFS, SMB) are *not* supported by
+  SQLite WAL — concurrent access leads to corruption or invisible lock
+  collisions that the test suite cannot reproduce. Keep `jobs.db` on local
+  disk. See [sqlite.org/wal.html](https://sqlite.org/wal.html).
+- **Cross-process clock skew bounds reaper accuracy.** The reaper flips
+  rows still in `running` whose `started_at` predates `now() -
+  reaper_threshold_s` (default 5 min). Each process uses its own clock; if
+  process clocks drift more than `reaper_threshold_s` apart, one process
+  can spurious-reap another's in-flight rows. Containers and CI runners
+  typically drift 50–500 ms under steady NTP, but resync events can spike
+  to seconds. For multi-process deployments on shared infra: keep NTP
+  healthy, or set `reaper_threshold_s` higher than the worst expected
+  skew.
+- **Direct construction warns at exit.** `Recorder(path=...)` does not
+  register `atexit.register(shutdown)` — only `recorded.configure(...)`
+  does. Direct-construction code paths must use `with Recorder(...) as r:`
+  or call `r.shutdown()` explicitly; otherwise the daemon worker is killed
+  at interpreter teardown, converting in-flight successes into
+  `CancelledError` rows. A module-level atexit hook logs a warning when
+  this hazard is detected.
+
 ## CLI
 
 ```

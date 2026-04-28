@@ -31,11 +31,11 @@ def recorder(db_path):
 @pytest.fixture
 def default_recorder(recorder):
     """Install `recorder` as the module-level default for the test."""
-    _recorder_mod._set_default(recorder)
+    _recorder_mod._set_default_for_testing(recorder)
     try:
         yield recorder
     finally:
-        _recorder_mod._set_default(None)
+        _recorder_mod._set_default_for_testing(None)
 
 
 @pytest.fixture(autouse=True)

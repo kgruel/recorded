@@ -674,13 +674,17 @@ def get_default() -> Recorder:
         return _default
 
 
-def _set_default(r: Recorder | None) -> None:
-    """Test-only swap of the module-level default Recorder.
+def _set_default_for_testing(r: Recorder | None) -> None:
+    """Test-only swap of the module-level default Recorder. **Not for
+    production use** — the explicit name is the contract.
 
     The previous default (if any and not the same instance) is shut down.
     Direct construction via `Recorder(...)` does NOT register `atexit` —
     only the *configured* default does (see `configure()`); test fixtures
     that swap via this hook are responsible for their own teardown.
+
+    The synchronous shutdown means a production caller swapping the default
+    mid-flight would tear down the recorder under concurrent users.
     """
     global _default
     with _default_lock:
