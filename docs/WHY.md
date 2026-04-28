@@ -471,6 +471,27 @@ multiple recorders booting against the same DB don't double-reap.
 > method. The original spec hinted at `start()`; never built. The
 > reaper sweep belongs in the same place schema bootstrap runs.
 
+## Status as persisted state
+
+**`status` is a write-once-per-transition record of a row's progress,
+not a real-time health signal.** Status changes are durable
+transactions written by whoever owns the row at that moment; liveness
+is observable separately, by reading `started_at` against a clock.
+Decoupling the two is what lets read-only consumers — dashboards,
+queries, the CLI — observe execution progress without racing the
+leader, and without needing write privilege to translate "stuck"
+into "failed."
+
+This is an instance of the same dissolution decision recorded in
+[Lifecycle → the heartbeat-row exception](#lifecycle): a separate
+`heartbeat_at` column was rejected because the reaper plus a coarse
+threshold against `started_at` already does the right thing. Naming
+the principle here makes the consequence explicit for users:
+`status="running"` is "claimed and not yet terminal," not "currently
+executing." Operational mechanics — the threshold, the sweep timing,
+the long-running-job caveat — live in
+[usage/workers.md → Status semantics](usage/workers.md#status-semantics).
+
 ## Read API
 
 **Minimal primitives + an escape hatch.** `last`, `get`, `query`,

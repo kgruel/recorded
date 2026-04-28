@@ -42,6 +42,17 @@ than streaming a live cursor — holding a cursor across thread boundaries
 races concurrent writes. "Lazy" here means "query deferred", not
 "row-streamed". Tune `limit` accordingly.
 
+> **Building a dashboard?** `status="running"` returns rows claimed by a
+> leader, not necessarily rows currently executing. Show `started_at`
+> alongside `status` for `running` rows: a row whose `started_at`
+> predates `now - reaper_threshold_s` (default 5 min) is a candidate
+> orphan awaiting the next bootstrap sweep; a fresher `started_at` is
+> either in-flight or a not-yet-aged orphan. The signal is
+> threshold-bounded rather than real-time — the library trades
+> per-row liveness for a coarser sweep, which is sufficient for the
+> dashboards and bulk queries it is meant to support. See
+> [Status semantics](workers.md#status-semantics) for the full model.
+
 ### `where_data` — equality only
 
 `where_data` compiles to `json_extract(data_json, '$.key') = ?` per pair.

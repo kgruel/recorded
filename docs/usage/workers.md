@@ -155,6 +155,62 @@ The leader notices on its next `_touch_leader_heartbeat` (rowcount = 0),
 re-claims a fresh slot, and emits a dual-channel `RecordedWarning`
 (see [errors](errors.md) and `docs/HOW.md::Warnings policy`).
 
+## Status semantics
+
+`status` is a persisted execution state, not a lease-health assertion.
+A row's `status` records progress through the lifecycle; it does not
+assert that any leader is currently executing the row.
+
+| status | meaning |
+|---|---|
+| `pending` | Row written; not yet claimed by a leader. |
+| `running` | Claimed by a leader; not yet terminal. **Does not** imply a leader is currently executing. |
+| `completed` | Terminal success. |
+| `failed` | Terminal failure (includes reaper-marked orphans). |
+
+### Inspecting liveness
+
+The library does not maintain a per-row heartbeat. The freshness signal
+for a `running` row is `started_at` against the reaper threshold:
+
+- A `running` row whose `started_at` predates `now - reaper_threshold_s`
+  (default 5 minutes; configurable via `Recorder(reaper_threshold_s=...)`
+  or `recorded.configure(reaper_threshold_s=...)`) is a *candidate
+  orphan* — it will be flipped to `failed` the next time any process
+  constructs a `Recorder()` and the reaper sweeps.
+- A `running` row whose `started_at` is within the threshold is either
+  genuinely in-flight or a fresh orphan that has not aged into the
+  sweep window yet.
+
+This signal is **threshold-bounded, not real-time**. A legitimate
+long-running job whose `started_at` predates `reaper_threshold_s` is
+indistinguishable from a true orphan via this signal. If your jobs may
+legitimately exceed the default, set `reaper_threshold_s` higher than
+your max expected duration; otherwise the reaper may flip in-flight
+long jobs to `failed` on the next leader bootstrap.
+
+The reserved `_recorded.leader` row tracks the *leader process's* own
+liveness — its `started_at` is refreshed every `leader_heartbeat_s`
+(default 5 s) and consulted by `is_leader_running()`. That heartbeat
+is about the leader, not per-job; ordinary job rows do not have a
+per-row heartbeat.
+
+### Recovery is bootstrap-driven, not continuous
+
+The library does not auto-translate stale `running` rows into `failed`
+for arbitrary readers. The reaper runs only on `Recorder()`
+construction (typically the next leader-process start). A long-lived
+process will not sweep orphans created after its own startup. If you
+need tighter recovery, run the leader under a supervisor that restarts
+it on a cadence that bounds your tolerance for stuck rows.
+
+### `JobHandle.wait(timeout=...)` is caller-side only
+
+The `wait` timeout fires for the caller's wait, not for the job. A
+caller giving up after `timeout` does not mutate the row; the row
+still reads `running` until the leader writes the terminal status (or
+the reaper marks it orphaned on a future bootstrap).
+
 ## The reaper
 
 A bootstrap startup sweep for orphaned `running` rows. Runs **once**,
