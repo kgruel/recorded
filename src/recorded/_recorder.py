@@ -617,18 +617,28 @@ class Recorder:
         )
         return rowcount > 0
 
-    def _release_leader_slot(self, leader_id: str) -> None:
-        """DELETE the leader's own heartbeat row on graceful shutdown.
+    def _release_leader_slot(self, host_pid: str) -> None:
+        """DELETE this process's running heartbeat row on graceful shutdown.
 
-        Symmetric with `_claim_leader_slot`. Avoids accumulating stale
-        heartbeat rows across leader restarts that cleanly hand off (no
-        crash, no SIGKILL). Crash-mode cleanup falls back to the reaper.
+        Keyed on `host_pid` (process identity), not the row id from
+        `_claim_leader_slot`: the resurrection branch in `_heartbeat_loop`
+        rebinds `leader_id` after a reap, so an id-keyed release would
+        leave the resurrected row alive. `host_pid` is process-stable.
+
+        Assumes one running slot per `host_pid` — enforced by the partial
+        unique index on `(kind, key)` excluding failed, and relied on by
+        `_claim_leader_slot`'s collision branch. If that invariant ever
+        relaxes (multi-slot-per-process), switch back to id-keying.
+
+        The `status='running'` guard preserves prior reaper-flipped rows
+        as audit evidence; only the live slot is removed. Crash-mode
+        cleanup falls back to the reaper.
         """
         conn = self._connection()
         with self._write_lock:
             conn.execute(
-                "DELETE FROM jobs WHERE id=? AND kind=?",
-                (leader_id, _storage.LEADER_KIND),
+                "DELETE FROM jobs WHERE kind=? AND key=? AND status='running'",
+                (_storage.LEADER_KIND, host_pid),
             )
 
     def _is_leader_running(self) -> bool:

@@ -188,11 +188,61 @@ def test_release_leader_slot_deletes_row(recorder: Recorder):
     leader_id = recorder._claim_leader_slot("host:graceful")
     assert recorder._is_leader_running() is True
 
-    recorder._release_leader_slot(leader_id)
+    recorder._release_leader_slot("host:graceful")
     assert recorder._is_leader_running() is False
 
     row = recorder._fetchone("SELECT 1 FROM jobs WHERE id=?", (leader_id,))
     assert row is None
+
+
+def test_release_leader_slot_after_resurrection_clears_fresh_slot(recorder: Recorder):
+    """Regression: a graceful shutdown after the heartbeat-was-reaped
+    resurrection edge must clear the *new* heartbeat row, not the
+    already-failed prior one. Pre-fix, release was keyed on the original
+    leader_id; the resurrected row leaked, leaving `is_leader_running()`
+    True for `leader_stale_s` and admitting unclaimable `.submit()` rows.
+    """
+    host_pid = "host:resurrected"
+    # First claim — this row will be reaped (simulated below).
+    first_id = recorder._claim_leader_slot(host_pid)
+    # Simulate the reaper having flipped our row to `failed` (the trigger
+    # for `_heartbeat_loop`'s resurrection branch).
+    with recorder._write_lock:
+        recorder._connection().execute(
+            "UPDATE jobs SET status='failed' WHERE id=?",
+            (first_id,),
+        )
+    # Resurrection: leader claims a fresh slot for the same host_pid.
+    second_id = recorder._claim_leader_slot(host_pid)
+    assert second_id != first_id
+    assert recorder._is_leader_running() is True
+
+    # Graceful shutdown — must clear the fresh slot.
+    recorder._release_leader_slot(host_pid)
+    assert recorder._is_leader_running() is False
+
+    # The reaped (failed) row stays as audit; the resurrected (running)
+    # row is gone.
+    failed_row = recorder._fetchone("SELECT status FROM jobs WHERE id=?", (first_id,))
+    assert failed_row == ("failed",)
+    fresh_row = recorder._fetchone("SELECT 1 FROM jobs WHERE id=?", (second_id,))
+    assert fresh_row is None
+
+
+def test_release_leader_slot_preserves_other_hosts(recorder: Recorder):
+    """`_release_leader_slot(host_pid)` only touches its own host_pid —
+    other live leaders on different host:pid values keep running."""
+    recorder._claim_leader_slot("host:other")
+    recorder._claim_leader_slot("host:mine")
+
+    recorder._release_leader_slot("host:mine")
+
+    assert recorder._is_leader_running() is True  # `host:other` still live
+    rows = recorder._fetchall(
+        "SELECT key FROM jobs WHERE kind=? AND status='running' ORDER BY key",
+        (_storage.LEADER_KIND,),
+    )
+    assert [r[0] for r in rows] == ["host:other"]
 
 
 # ----- read-API exclusion (sanity check) -----------------------------------

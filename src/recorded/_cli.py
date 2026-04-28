@@ -245,10 +245,12 @@ async def _lead_forever(  # pragma: no cover — subprocess-tested
             await heartbeat_task
         except asyncio.CancelledError:
             pass
-        # Graceful release: DELETE our heartbeat row so it doesn't linger
-        # in the audit log until the reaper sweeps it.
+        # Graceful release: DELETE our running heartbeat row so it doesn't
+        # linger in the audit log until the reaper sweeps it. Keyed on
+        # host_pid (not leader_id) because `_heartbeat_loop` may have
+        # rebound leader_id after a resurrection — host_pid is stable.
         try:
-            await asyncio.to_thread(rec._release_leader_slot, leader_id)
+            await asyncio.to_thread(rec._release_leader_slot, host_pid)
         except Exception:
             pass
         print(f"recorded: leader stopped ({host_pid})", file=stdout, flush=True)
