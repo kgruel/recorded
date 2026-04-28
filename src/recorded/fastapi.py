@@ -48,6 +48,7 @@ DEFAULT_REDACT_HEADERS: frozenset[str] = frozenset(
 async def capture_request(
     request: Any,
     *,
+    max_body_bytes: int | None = None,
     redact_headers: Iterable[str] | None = None,
     allow_headers: Iterable[str] | None = None,
     redact_value: str = "<redacted>",
@@ -72,6 +73,14 @@ async def capture_request(
       kept, all others dropped. Mutually exclusive with `redact_headers`.
     - `redact_value=` — marker string ("<redacted>" by default).
 
+    Body policy: with the default `max_body_bytes=None` the full body is
+    read via `request.body()` (Starlette caches the result so downstream
+    handlers can read it again). When `max_body_bytes` is set, the body is
+    read via `request.stream()` and reading stops once the cap is exceeded
+    — bounding peak memory. The stream is consumed in the process; the
+    helper sets `request._body` to the (truncated) content so downstream
+    `request.body()` continues to work for Starlette-shaped requests.
+
     Raises `TypeError` if the request object doesn't expose the expected
     Starlette-shaped attributes — this is how we duck-type without
     importing FastAPI/Starlette.
@@ -81,6 +90,11 @@ async def capture_request(
             "capture_request: pass either redact_headers= or allow_headers=, "
             "not both."
         )
+    if max_body_bytes is not None and max_body_bytes < 0:
+        raise TypeError(
+            f"capture_request: max_body_bytes must be non-negative, got "
+            f"{max_body_bytes}."
+        )
 
     missing = [a for a in _REQUIRED_ATTRS if not hasattr(request, a)]
     if missing:
@@ -88,14 +102,44 @@ async def capture_request(
             f"capture_request() expected a Starlette/FastAPI-shaped Request "
             f"object; got {type(request).__name__} missing {missing!r}."
         )
+    if max_body_bytes is not None and not hasattr(request, "stream"):
+        raise TypeError(
+            "capture_request(max_body_bytes=...) requires the request object "
+            "to expose `stream()`."
+        )
 
-    raw_body = await request.body()
+    truncated = False
+    if max_body_bytes is None:
+        raw_body = await request.body()
+    else:
+        chunks: list[bytes] = []
+        total = 0
+        async for chunk in request.stream():
+            chunks.append(chunk)
+            total += len(chunk)
+            if total > max_body_bytes:
+                truncated = True
+                break
+        raw_body = b"".join(chunks)
+        if truncated:
+            raw_body = raw_body[:max_body_bytes]
+        # Re-prime Starlette's body cache so downstream handlers reading
+        # `request.body()` see the (possibly truncated) content rather than
+        # raising on the consumed stream. Best-effort: non-Starlette ducks
+        # silently skip.
+        try:
+            request._body = raw_body
+        except (AttributeError, TypeError):
+            pass
+
     body: str | None
-    if raw_body:
+    if raw_body or truncated:
         # Starlette returns bytes. We surface utf-8 text; binary uploads
         # outside utf-8 are rare for handlers worth recording, and the
         # caller can compose their own envelope if they need bytes.
         body = raw_body.decode("utf-8", errors="replace")
+        if truncated:
+            body += f"\n<truncated to {max_body_bytes} bytes>"
     else:
         body = None
 

@@ -137,6 +137,33 @@ class JoinTimeoutError(IdempotencyError, TimeoutError):
         )
 
 
+class RowDisappearedError(IdempotencyError):
+    """A waiter is parked on a row that no longer exists.
+
+    Surfaces in `JobHandle.wait()` / `wait_sync()` and the bare-call
+    idempotency-join path when the row is deleted between subscribe and
+    terminal-write — operationally rare (DROP TABLE, manual cleanup,
+    foreign-process delete) but the wait loop would otherwise run to
+    `JoinTimeoutError` (default 30 s) instead of failing in milliseconds.
+    """
+
+    def __init__(
+        self,
+        *,
+        kind: str,
+        key: str | None,
+        sibling_job_id: str,
+    ) -> None:
+        self.kind = kind
+        self.key = key
+        self.sibling_job_id = sibling_job_id
+        super().__init__(
+            f"Row {sibling_job_id} (kind={kind!r}, key={key!r}) disappeared "
+            "before reaching terminal status — likely deleted by an external "
+            "process or DROP TABLE."
+        )
+
+
 class IdempotencyRaceError(IdempotencyError):
     """Lost the post-INSERT collision lookup race.
 

@@ -200,6 +200,69 @@ def test_fastapi_capture_request_allow_and_redact_mutually_exclusive():
         )
 
 
+def test_fastapi_capture_request_max_body_bytes_truncates_body():
+    """`max_body_bytes=N` caps the recorded body and limits peak memory by
+    streaming. Truncated bodies append an explicit marker."""
+    captured: list = []
+    app = FastAPI()
+
+    @app.post("/x")
+    async def handler(request: Request):
+        env = await recorded_fastapi.capture_request(request, max_body_bytes=8)
+        captured.append(env)
+        # Downstream body() should still work — capture_request re-primed
+        # request._body with the truncated bytes.
+        body = await request.body()
+        return {"body_len": len(body)}
+
+    client = TestClient(app)
+    resp = client.post("/x", content=b"AAAAAAAAAAAAAAAAAAAA")  # 20 bytes
+    assert resp.status_code == 200
+    assert resp.json() == {"body_len": 8}
+
+    body = captured[0]["body"]
+    assert body.startswith("AAAAAAAA")
+    assert "<truncated to 8 bytes>" in body
+
+
+def test_fastapi_capture_request_max_body_bytes_under_cap_no_marker():
+    """A body shorter than the cap is unchanged — no marker, full content."""
+    captured: list = []
+    app = FastAPI()
+
+    @app.post("/x")
+    async def handler(request: Request):
+        env = await recorded_fastapi.capture_request(
+            request, max_body_bytes=1024
+        )
+        captured.append(env)
+        return {"ok": True}
+
+    client = TestClient(app)
+    client.post("/x", content=b"short body")
+    body = captured[0]["body"]
+    assert body == "short body"
+    assert "<truncated" not in body
+
+
+def test_fastapi_capture_request_max_body_bytes_rejects_negative():
+    import asyncio
+
+    class _Stub:
+        method = "GET"
+        url = type("U", (), {"path": "/"})()
+        headers: dict = {}
+        query_params: dict = {}
+
+        async def body(self):
+            return b""
+
+    with pytest.raises(TypeError, match="non-negative"):
+        asyncio.run(
+            recorded_fastapi.capture_request(_Stub(), max_body_bytes=-1)
+        )
+
+
 def test_fastapi_capture_request_rejects_non_request_shaped():
     """Duck-typing failure surfaces a clear `TypeError`, not an opaque
     `AttributeError` from deep inside the helper."""

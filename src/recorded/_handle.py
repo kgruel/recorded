@@ -23,6 +23,7 @@ from . import _storage
 from ._errors import (
     JoinedSiblingFailedError,
     JoinTimeoutError,
+    RowDisappearedError,
     SyncInLoopError,
 )
 from ._recorder import NOTIFY_POLL_INTERVAL_S
@@ -52,7 +53,8 @@ def _wait_for_terminal_sync(
     """Block until `fut` resolves with a terminal status, with cross-
     process polling fallback. Returns the terminal status string.
 
-    Raises `JoinTimeoutError` if `timeout_s` elapses first.
+    Raises `JoinTimeoutError` if `timeout_s` elapses first, or
+    `RowDisappearedError` if the row is deleted while we're parked.
     """
     deadline = time.monotonic() + timeout_s
     while True:
@@ -70,6 +72,10 @@ def _wait_for_terminal_sync(
             status = recorder._row_status(job_id)
             if status in _storage.TERMINAL_STATUSES:
                 return status
+            if status is None:
+                raise RowDisappearedError(
+                    kind=kind, key=key, sibling_job_id=job_id,
+                ) from None
 
 
 async def _wait_for_terminal_async(
@@ -105,6 +111,10 @@ async def _wait_for_terminal_async(
             status = await asyncio.to_thread(recorder._row_status, job_id)
             if status in _storage.TERMINAL_STATUSES:
                 return status
+            if status is None:
+                raise RowDisappearedError(
+                    kind=kind, key=key, sibling_job_id=job_id,
+                ) from None
 
 
 class JobHandle:
