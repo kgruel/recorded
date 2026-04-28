@@ -1,0 +1,9 @@
+# Commits listed here are skipped by `git blame` so mass-mechanical
+# changes (formatter sweeps, mass renames) don't bury the actual author
+# of a line.
+#
+# Local one-time setup (GitHub honors this file automatically):
+#   git config blame.ignoreRevsFile .git-blame-ignore-revs
+
+# style: apply ruff format across src/ and tests/
+31082b92ca8f624b077660c73ef6b3cafe846b28
