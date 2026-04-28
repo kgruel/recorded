@@ -52,13 +52,22 @@ def _to_native(value: Any) -> Any:
     cover the realistic case.
     """
     if hasattr(value, "model_dump") and callable(value.model_dump):
-        # `by_alias=False` neutralizes `serialization_alias` /
-        # `serialize_by_alias=True`: stored shape stays canonical so
-        # the matching `model_validate` path can read it back.
-        return value.model_dump(mode="json", by_alias=False)
+        return _dump_pydantic(value)
     if dataclasses.is_dataclass(value) and not isinstance(value, type):
         return dataclasses.asdict(value)
     return value
+
+
+def _dump_pydantic(value: Any) -> Any:
+    """Canonical Pydantic dump for storage.
+
+    Centralized so `_to_native`, `_PydanticAdapter.serialize`, and
+    `_PydanticAdapter.project` cannot drift apart on the `by_alias=`
+    contract. `by_alias=False` neutralizes `serialization_alias` and
+    `model_config(serialize_by_alias=True)`: stored shape stays
+    canonical so the matching `model_validate` path can read it back.
+    """
+    return value.model_dump(mode="json", by_alias=False)
 
 
 class Adapter(ABC):
@@ -192,13 +201,9 @@ class _PydanticAdapter(Adapter):
             return None
         try:
             if isinstance(value, self.model):
-                # `by_alias=False` keeps stored shape canonical even
-                # when the model sets `serialization_alias` or
-                # `serialize_by_alias=True`; matches what `deserialize`
-                # expects to read back.
-                return value.model_dump(mode="json", by_alias=False)
+                return _dump_pydantic(value)
             # validate-then-dump: ensures stored shape is canonical
-            return self.model.model_validate(value).model_dump(mode="json", by_alias=False)
+            return _dump_pydantic(self.model.model_validate(value))
         except Exception as exc:
             raise SerializationError(
                 f"Cannot serialize {type(value).__name__} into "
@@ -214,9 +219,9 @@ class _PydanticAdapter(Adapter):
 
     def project(self, response: Any) -> dict[str, Any]:
         if isinstance(response, self.model):
-            return response.model_dump(mode="json", by_alias=False)
+            return _dump_pydantic(response)
         if isinstance(response, dict):
-            return self.model.model_validate(response).model_dump(mode="json", by_alias=False)
+            return _dump_pydantic(self.model.model_validate(response))
         return {}
 
 
