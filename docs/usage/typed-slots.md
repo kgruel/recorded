@@ -107,6 +107,21 @@ Anything else passed to `request=` / `response=` / `data=` / `error=` raises
 # ConfigurationError: Unsupported model type: <class 'str'>...
 ```
 
+## Joiner type identity (the response slot)
+
+For idempotency joiners (`key=`), the rule is simple: **declare
+`response=Model` if you want the joiner to receive a typed instance.**
+
+Joiners — same-process and cross-process — read the response from
+storage. Without `response=Model`, the response column round-trips as a
+dict and that is what the joiner sees, even though the leader returned a
+typed instance. With `response=Model` declared, both the leader's return
+value and the joiner's storage rehydration produce the model instance.
+
+See [`docs/usage/idempotency.md`](idempotency.md) for the join flow and
+[`docs/WHY.md` — Joiner symmetry](../WHY.md#joiner-symmetry) for the
+rationale.
+
 ## The `data` slot — queryable projections
 
 `data` is the slot that turns the audit log into a queryable index. It

@@ -209,22 +209,6 @@ action* explicitly, independent of what your function happens to be
 called. The cost is one explicit name once per idempotent action;
 the value is "this won't silently break across renames."
 
-### Live-result stash
-
-**The leader stashes its typed result for in-process joiners.**
-Same-process idempotency joiners need to receive the leader's typed
-return value, not the storage-rehydrated dict — without forcing
-every typed-return user to declare `response=Model`.
-
-`_live_results: dict[job_id, Any]` is guarded by `_notify_lock` (the
-same lock `_resolve` already holds, keeping stash/take/clear and
-subscribe/notify atomic together). Cleanup paths in
-[HOW.md → idempotency](HOW.md#idempotency--the-partial-unique-index-trick).
-
-Cross-process joiners always go through storage and need
-`response=Model` to preserve type identity. Documented advanced
-contract.
-
 ### `retry_failed=` and `JoinedSiblingFailedError`
 
 **Failed rows retry by default; `retry_failed=False` joins the
@@ -303,6 +287,39 @@ replacing the user's exception with one the bare function couldn't
 produce. The data-slot rule and the error-slot rule are both
 consequences of the same principle; their mechanics differ because
 the slots' write semantics differ.
+
+### Joiner symmetry
+
+**All joiners — same-process and cross-process — rehydrate response
+from storage. Type identity for typed-instance returns under `key=`
+requires `response=Model`.**
+
+Earlier the `Recorder` carried an in-process live-result stash: the
+leader pushed its typed return value into `_live_results[job_id]`
+just before the terminal write so a same-process joiner could pop it
+and skip storage rehydration. The intent was to spare typed-return
+users from declaring `response=Model` purely to satisfy in-process
+joiners.
+
+The stash didn't hold its invariant. `_take_live_result` popped on
+consume, so on N same-key in-process joiners only the first got the
+typed object; the rest fell through to storage and got the dict.
+"Type identity preserved" became a coin flip among siblings, and
+cross-process joiners — who never hit the stash — got the dict
+deterministically. Same recorded row, three different return-type
+shapes depending on lottery position. That violated wrap-transparency
+across the joiner cohort and added a cleanup invariant the reaper
+had to maintain (drop stale entries when sweeping orphaned rows).
+
+Dissolved into a single rule, symmetric with the typed-data attach
+contract above: the slot model is the contract. Declare
+`response=Model` and joiners get the typed instance — same shape the
+leader returned, by storage round-trip. Don't, and joiners get the
+dict — same shape every joiner sees, every time. One mental model
+for in-process and cross-process joins. Costs one SQLite WAL read
+plus a JSON parse for the formerly-lucky first joiner; sub-millisecond
+on a local file, and the price is paid for predictability rather
+than for an invariant the cache couldn't keep.
 
 ## The wait primitive
 

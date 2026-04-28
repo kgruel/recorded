@@ -131,9 +131,8 @@ What happens (`_decorator.py`):
 7. Branch:
    - **Success**: `_write_completion()` serializes response + data via
      adapters (data auto-projects from response via the data adapter's
-     `.project(response)`), merges with the attach buffer, stashes the
-     live result if `key` is set, calls `_mark_completed(...)` —
-     terminal write. Returns the
+     `.project(response)`), merges with the attach buffer, calls
+     `_mark_completed(...)` — terminal write. Returns the
      function's natural value (transparency invariant). If
      `_write_completion` itself raises, the row is marked failed, a
      warning is logged on the `recorded` logger, and `result` is still
@@ -488,7 +487,7 @@ src/recorded/
   _handle.py      — JobHandle + canonical _wait_for_terminal_{sync,async} helpers
   _lifecycle.py   — _run_and_record + _validate_call_args + _serialize_*
                     + _write_completion (recording machinery shared by bare + leader)
-  _recorder.py    — Recorder (connection, writes, notify, live-result cache, reaper,
+  _recorder.py    — Recorder (connection, writes, notify, reaper,
                     leader heartbeat protocol, configure)
   _registry.py    — kind → RegistryEntry
   _storage.py     — schema DDL, canonical SQL, helpers, LEADER_KIND constant

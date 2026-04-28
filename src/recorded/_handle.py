@@ -164,14 +164,7 @@ class JobHandle:
             )
         finally:
             self._recorder._unsubscribe(self.job_id, fut)
-        try:
-            return self._resolve_to_job(status)
-        finally:
-            # Drain the live-result cache. JobHandle.wait() returns the
-            # storage-rehydrated `Job`, so the cache entry would otherwise
-            # leak on the no-sibling-joiner path. A racing same-key bare-
-            # call sibling that consumes first is a no-op for us.
-            self._recorder._take_live_result(self.job_id)
+        return self._resolve_to_job(status)
 
     # ----- sync wait -----
 
@@ -205,11 +198,7 @@ class JobHandle:
             )
         finally:
             self._recorder._unsubscribe(self.job_id, fut)
-        try:
-            return self._resolve_to_job(status)
-        finally:
-            # See `wait()` above: drain the live-result cache.
-            self._recorder._take_live_result(self.job_id)
+        return self._resolve_to_job(status)
 
     # ----- helpers -----
 

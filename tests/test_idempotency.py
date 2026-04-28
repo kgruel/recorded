@@ -203,19 +203,21 @@ async def test_idempotency_retry_failed_false_raises_joined_sibling_failed(
     assert n == 1
 
 
-# --- bug #3: typed-instance joiner gets the typed object, not the storage dict ---
+# --- joiner response shape: symmetric across same-process / cross-process ---
+#
+# After dissolving the live-result cache, all joiners (same-process and
+# cross-process) rehydrate the response from storage. Type identity for
+# typed-instance returns under `key=` requires `response=Model`. The two
+# tests below pin both halves of that contract for same-process joiners;
+# cross-process joiners are exercised by the leader-driven suites.
 
 
 @pytest.mark.asyncio
-async def test_typed_instance_join_preserves_type_in_process(default_recorder, monkeypatch):
-    """Same-process key-collision joiner receives the leader's live typed
-    object, not the storage-rehydrated dict. Wrap-transparency holds for
-    typed returns under `key=` without requiring `response=Model`.
-
-    Cross-process joiners would still go through storage and need
-    `response=Model` for typed returns — that is the documented advanced
-    contract.
-    """
+async def test_joiners_get_dict_without_response_model(default_recorder, monkeypatch):
+    """Two same-process callers with the same `key=`, no `response=Model`
+    declared: both get the dict shape from storage rehydration. Pins the
+    post-cache contract — the leader's live typed object is no longer
+    visible to the joiner."""
     from dataclasses import dataclass
 
     @dataclass
@@ -226,7 +228,7 @@ async def test_typed_instance_join_preserves_type_in_process(default_recorder, m
     started = asyncio.Event()
     proceed = asyncio.Event()
 
-    @recorder(kind="t.idem.typed_join")
+    @recorder(kind="t.idem.joiner_dict")
     async def place_order(req):
         started.set()
         await proceed.wait()
@@ -240,22 +242,61 @@ async def test_typed_instance_join_preserves_type_in_process(default_recorder, m
 
     monkeypatch.setattr(default_recorder, "_for_testing_subscribe_callback", on_subscribe)
 
-    leader_task = asyncio.create_task(place_order("A", key="kk"))
+    leader_task = asyncio.create_task(place_order("A", key="kk-dict"))
     await started.wait()
 
-    joiner_task = asyncio.create_task(place_order("A", key="kk"))
-    # Joiner has parked on `_subscribe`, so the live-result cache will
-    # have a consumer when the leader resolves.
+    joiner_task = asyncio.create_task(place_order("A", key="kk-dict"))
     await subscribed.wait()
     proceed.set()
     leader_result, joiner_result = await asyncio.gather(leader_task, joiner_task)
 
-    # Leader gets its live result.
+    # Leader returns the wrapped function's return value (wrap-transparent).
     assert isinstance(leader_result, OrderReply)
-    assert leader_result.order_id == "order-A"
 
-    # In-process joiner gets the typed instance via the live-result cache,
-    # not a dict.
+    # Joiner rehydrates from storage; without `response=Model` the
+    # response column round-trips as a dict.
+    assert not isinstance(joiner_result, OrderReply)
+    assert joiner_result == {"order_id": "order-A", "amount": 42}
+
+
+@pytest.mark.asyncio
+async def test_joiners_preserve_type_with_response_model(default_recorder, monkeypatch):
+    """Symmetric guarantee: with `response=Model` declared, the joiner's
+    storage rehydration produces the typed instance — same shape the
+    leader returned, no cache required."""
+    from dataclasses import dataclass
+
+    @dataclass
+    class OrderReply:
+        order_id: str
+        amount: int
+
+    started = asyncio.Event()
+    proceed = asyncio.Event()
+
+    @recorder(kind="t.idem.joiner_typed", response=OrderReply)
+    async def place_order(req):
+        started.set()
+        await proceed.wait()
+        return OrderReply(order_id=f"order-{req}", amount=42)
+
+    subscribed = asyncio.Event()
+    loop = asyncio.get_running_loop()
+
+    def on_subscribe(_jid: str) -> None:
+        loop.call_soon_threadsafe(subscribed.set)
+
+    monkeypatch.setattr(default_recorder, "_for_testing_subscribe_callback", on_subscribe)
+
+    leader_task = asyncio.create_task(place_order("A", key="kk-typed"))
+    await started.wait()
+
+    joiner_task = asyncio.create_task(place_order("A", key="kk-typed"))
+    await subscribed.wait()
+    proceed.set()
+    leader_result, joiner_result = await asyncio.gather(leader_task, joiner_task)
+
+    assert isinstance(leader_result, OrderReply)
     assert isinstance(joiner_result, OrderReply)
     assert joiner_result.order_id == "order-A"
     assert joiner_result.amount == 42
@@ -320,35 +361,6 @@ async def test_typed_data_round_trips_for_idempotency_joiner(default_recorder, m
     assert isinstance(job.data, OrderView)
     assert job.data.order_id == "order-A"
     assert job.data.note == "fast lane"
-
-
-# --- live-result cache hygiene (regression tests for the leak fix) ----------
-#
-# `_live_results` is a per-recorder in-process stash populated by
-# `_run_and_record_async` immediately before the terminal write, so
-# *same-process* idempotency joiners receive the leader's typed object
-# rather than the storage-rehydrated dict.
-#
-# Under cross-process leadership the leader's stash lives in the *leader*
-# process — the submitting process never populates its own
-# `_live_results`. The .submit()-based variants of these tests pinned an
-# in-process invariant that no longer applies; the bare-call variant
-# below stays — that path still uses the in-process stash.
-
-
-def test_keyed_bare_call_no_joiner_clears_cache_on_resolve(default_recorder):
-    """Keyed bare-call with no sibling joiner: `_resolve` runs against an
-    empty subscribers list and pops the stash, so the cache does not grow
-    per-call."""
-
-    @recorder(kind="t.live.bare_keyed_no_joiner")
-    def fn(x):
-        return {"x": x}
-
-    out = fn(11, key="kk-bare-solo")
-    assert out == {"x": 11}
-    # Cache empty — `_resolve` cleared it on the no-subscriber path.
-    assert len(default_recorder._live_results) == 0
 
 
 # --- IdempotencyRaceError raise sites (post-INSERT lookup returns None) ----

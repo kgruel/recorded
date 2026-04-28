@@ -116,19 +116,8 @@ class Recorder:
 
         # Notify registry: job_id -> list of subscribed Futures. Resolved
         # by `_resolve()` after a terminal SQL update commits.
-        # `_live_results` rides the same lock — both are consumed in tandem
-        # at terminal-resolution time, and using `_lock` for the cache
-        # would deadlock since the reaper holds `_lock` while resolving.
         self._notify_lock = threading.Lock()
         self._notify_subscribers: dict[str, list[concurrent.futures.Future]] = {}
-        # Live-result cache: in-process bare-call leaders stash their live
-        # result here before the terminal write so same-process
-        # idempotency-collision joiners (also bare-call) receive the typed
-        # object (not the storage-rehydrated dict). Only stashed for keyed
-        # rows. Cross-process .submit() leaders run in another process and
-        # don't populate this cache; cross-process joiners go through
-        # storage rehydration (the documented advanced contract).
-        self._live_results: dict[str, Any] = {}
 
         # Test-only callback fired from `_subscribe` once the future is
         # registered (whether it parks or pre-resolves inline). Used by
@@ -520,43 +509,12 @@ class Recorder:
         `cursor.rowcount > 0` so a no-op UPDATE (e.g. a late completion
         for a reaped row) doesn't double-resolve subscribers that another
         writer already handled.
-
-        Cleans up the live-result cache on the no-subscriber path: if no
-        joiner was parked at terminal-write time, no consumer will follow
-        and the stash would otherwise leak until the reaper sweeps. Late
-        joiners arriving after this point fall through to storage
-        rehydration — the documented cross-process trade-off.
         """
         with self._notify_lock:
             lst = self._notify_subscribers.pop(job_id, [])
-            if not lst:
-                # No joiner parked; drop the stash now to avoid a leak.
-                # Late joiners arriving after this point fall through to
-                # storage rehydration (the documented cross-process trade).
-                self._live_results.pop(job_id, None)
         for fut in lst:
             if not fut.done():
                 fut.set_result(status)
-
-    # ----- live-result cache -----
-
-    def _stash_live_result(self, job_id: str, result: Any) -> None:
-        """Stash the in-memory result of a successful execution.
-
-        Called by `_run_and_record` (and its async variant) just before
-        the terminal write, so same-process idempotency joiners can
-        receive the typed object on consume rather than the storage-
-        rehydrated dict. Only same-process joiners benefit; cross-process
-        joiners always go through storage and need `response=Model` to
-        preserve type identity.
-        """
-        with self._notify_lock:
-            self._live_results[job_id] = result
-
-    def _take_live_result(self, job_id: str) -> Any:
-        """Pop the live result for `job_id`. Returns `_MISSING` if absent."""
-        with self._notify_lock:
-            return self._live_results.pop(job_id, _MISSING)
 
     # ----- reaper -----
 
@@ -567,20 +525,13 @@ class Recorder:
         with `self._lock` held. Not gated by `_write_lock` because no
         other thread can hold a connection reference yet — the lazy
         connection has only just been created.
-
-        Also sweeps the live-result cache: any reaped row was orphaned by
-        a dead process, so any stash from a prior (now-dead) process is
-        gone anyway, but stale entries from the current process for rows
-        the reaper just failed are dropped.
         """
         threshold_iso = _storage.format_iso(
             datetime.now(timezone.utc) - timedelta(seconds=self.reaper_threshold_s)
         )
         rows = conn.execute(_storage.REAP_STUCK, (_storage.now_iso(), threshold_iso)).fetchall()
-        # Resolve subscribers and clear any straggling stash. `_resolve`
-        # already pops `_live_results[job_id]` on the no-subscriber path
-        # (which is the path for reaped rows), and uses `_notify_lock` —
-        # not `_lock` — so it's safe to call while `_lock` is held here.
+        # `_resolve` uses `_notify_lock` — not `_lock` — so it's safe to
+        # call while `_lock` is held here.
         for (job_id,) in rows:
             self._resolve(job_id, _storage.STATUS_FAILED)
 
@@ -691,10 +642,6 @@ class Recorder:
 
 
 # ----- helpers -----
-
-
-# Sentinel for "no cache entry" — distinct from `None` (a valid stashed value).
-_MISSING: Any = object()
 
 
 def _normalize_iso(value: str | datetime) -> str:

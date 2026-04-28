@@ -183,7 +183,7 @@ def _build_async_wrapper(
         async def _invoke() -> Any:
             return await fn(*args, **kwargs)
 
-        return await _run_and_record_async(recorder_inst, entry, job_id, key, _invoke)
+        return await _run_and_record_async(recorder_inst, entry, job_id, _invoke)
 
     typed = cast(_RecordedCallable, async_wrapper)
     _attach_call_modes(typed, fn, entry, is_async=True)
@@ -219,7 +219,7 @@ def _build_sync_wrapper(
         except sqlite3.IntegrityError:
             return _wait_for_join(recorder_inst, entry, key, retry_failed)
 
-        return _run_and_record(recorder_inst, entry, job_id, key, lambda: fn(*args, **kwargs))
+        return _run_and_record(recorder_inst, entry, job_id, lambda: fn(*args, **kwargs))
 
     typed = cast(_RecordedCallable, sync_wrapper)
     _attach_call_modes(typed, fn, entry, is_async=False)
@@ -521,17 +521,9 @@ async def _async_wait_for_join(
 def _response_for(recorder_inst: Recorder, job_id: str) -> Any:
     """Return the response of a completed job.
 
-    Same-process joiners hit the live-result cache and receive the
-    leader's typed object (preserving type identity for typed-instance
-    returns under `key=` even when `response=Model` isn't registered).
-    Cross-process joiners (or any joiner consuming after the cache was
-    cleared) fall back to storage rehydration.
+    All joiners (same-process and cross-process) rehydrate from storage.
+    Type identity for typed-instance returns requires `response=Model`.
     """
-    from ._recorder import _MISSING
-
-    live = recorder_inst._take_live_result(job_id)
-    if live is not _MISSING:
-        return live
     job = recorder_inst.get(job_id)
     return job.response if job is not None else None
 

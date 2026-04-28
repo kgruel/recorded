@@ -316,7 +316,7 @@ async def _execute_claimed_row(rec: Recorder, row: tuple) -> None:
     (
         job_id,
         kind,
-        key,
+        _key,
         _status,
         _submitted_at,
         _started_at,
@@ -351,7 +351,7 @@ async def _execute_claimed_row(rec: Recorder, row: tuple) -> None:
             return await asyncio.to_thread(fn, request)
 
     try:
-        await _run_and_record_async(rec, entry, job_id, key, _invoke)
+        await _run_and_record_async(rec, entry, job_id, _invoke)
     except asyncio.CancelledError:
         try:
             rec._mark_failed(

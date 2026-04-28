@@ -19,8 +19,10 @@ def place_order(req: OrderRequest) -> OrderReply:
 # First call runs the function and records the result
 reply = place_order(req, key="order-42")
 
-# Subsequent calls with the same key return the cached response
-# without re-charging the broker — even from a different process.
+# Subsequent calls with the same key rehydrate the recorded response
+# from storage without re-charging the broker — even from a different
+# process. For typed-instance returns, declare `response=Model` so
+# joiners see the typed object rather than a dict (see below).
 reply = place_order(req, key="order-42")
 ```
 
@@ -54,6 +56,17 @@ A keyed call follows this flow:
 In-process joins resolve via a `concurrent.futures.Future` registered under
 the recorder's notify lock — no polling. Cross-process joins fall back to a
 short polling loop (200 ms cadence) with the same wait helper.
+
+## Joiner response shape
+
+All joiners — same-process or cross-process — read the response from
+storage. The leader returns its own live return value (wrap-transparent);
+joiners always go through SQLite + JSON rehydration.
+
+For typed-instance returns under `key=`, declare `response=Model` on the
+decorator. Without it, the response column round-trips as a dict and that
+is what the joiner receives. See [`docs/usage/typed-slots.md`](typed-slots.md)
+for the slot mechanics.
 
 ## `key=` requires explicit `kind=`
 
