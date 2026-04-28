@@ -27,7 +27,7 @@ if [ "$ty_count" -lt "$TY_BASELINE" ]; then
   printf '\n\033[1;33m==> ty: %s diagnostics, baseline is %s — lower the baseline in scripts/ci.sh\033[0m\n' "$ty_count" "$TY_BASELINE" >&2
 fi
 
-step "pytest"
-uv run pytest -q
+step "pytest (xdist + coverage)"
+uv run pytest -q -n auto --cov=recorded --cov-report=term-missing --cov-fail-under="${COV_MIN:=85}"
 
 printf '\n\033[1;32m==> ci: ok\033[0m\n'
