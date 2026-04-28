@@ -142,7 +142,7 @@ async def get_user(login: str) -> UserResponse:
 ```
 
 Both can be Pydantic without colliding. The decorator's `data=GitHubUser`
-projects only the fields you'll grep on later (`recorded.list(where_data=
+projects only the fields you'll grep on later (`recorded.query(where_data=
 {"login": ...})` works); the full GitHub response stays in `response_json`.
 
 ## Exposing recorded history through an endpoint

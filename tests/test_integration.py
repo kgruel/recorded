@@ -375,7 +375,7 @@ async def test_slow_response_records_realistic_duration(default_recorder, httpse
 async def test_query_real_recorded_data(default_recorder, httpserver):
     """Exercise the read API against rows produced by real recorded calls.
 
-    `recorded.list()` and `recorded.connection()` are specced in WHY.md
+    `recorded.query()` and `recorded.connection()` are specced in WHY.md
     but not implemented in phase 1 (only `get()` and `last()` ship). We
     drive the equivalents through `last()` + `Recorder._connection()` and
     document the API gap in PROGRESS_INTEGRATION.md.
@@ -405,7 +405,7 @@ async def test_query_real_recorded_data(default_recorder, httpserver):
             return r.json()
 
     # Seed a mix of rows. attach() puts customer_id in data_json so we can
-    # exercise the where_data shape via raw SQL (since recorded.list is
+    # exercise the where_data shape via raw SQL (since recorded.query is
     # not implemented in phase 1).
     @recorder(kind="ext.api.with_data")
     async def with_data(req: dict) -> dict:
@@ -430,7 +430,7 @@ async def test_query_real_recorded_data(default_recorder, httpserver):
     glob = last(50, kind="ext.api.*")
     assert len(glob) == 8
 
-    # Equivalent of recorded.list(where_data={"customer_id": 7}) — raw SQL
+    # Equivalent of recorded.query(where_data={"customer_id": 7}) — raw SQL
     # via the Recorder's connection (recorded.connection() does not exist
     # in phase 1; flagged as gap in PROGRESS_INTEGRATION.md).
     rows = (

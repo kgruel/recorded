@@ -329,12 +329,12 @@ multiple recorders booting against the same DB don't double-reap.
 
 ## Read API
 
-**Minimal primitives + an escape hatch.** `last`, `get`, `list`,
+**Minimal primitives + an escape hatch.** `last`, `get`, `query`,
 `connection`. The library knows the schemas-per-`kind` from the
 decorator registry, so reads return rehydrated typed values where
 models were registered, raw dicts where not.
 
-`recorded.list(...)` filters: `kind` (glob), `status` (exact), `key`
+`recorded.query(...)` filters: `kind` (glob), `status` (exact), `key`
 (exact), `since` / `until`, `where_data` (equality on top-level
 keys), `limit`, `order`. **Equality only.** Anything richer goes
 through `recorded.connection()` and raw SQL.

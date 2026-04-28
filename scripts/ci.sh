@@ -14,7 +14,7 @@ uv run ruff check src tests
 step "ruff format --check"
 uv run ruff format --check src tests
 
-step "ty check (baseline: ${TY_BASELINE:=3})"
+step "ty check (baseline: ${TY_BASELINE:=0})"
 ty_output=$(uv run ty check src 2>&1 || true)
 echo "$ty_output"
 ty_count=$(printf '%s\n' "$ty_output" | sed -n 's/^Found \([0-9][0-9]*\) diagnostics.*/\1/p' | tail -1)

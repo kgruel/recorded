@@ -134,7 +134,7 @@ def place_order(req) -> OrderReply:
     return broker.place(req)
 
 # Now:
-recorded.list(
+recorded.query(
     kind="orders.place",
     where_data={"customer_id": 7},
 )

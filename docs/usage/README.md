@@ -27,7 +27,7 @@ tour; the **By need** table below it is a faster path to a specific goal.
 7. **[fastapi.md](fastapi.md)** — lifespan integration,
    `capture_request`, the two-shape pattern (recorder slot vs API
    contract).
-8. **[queries.md](queries.md)** — `recorded.list(...)` filters, raw SQL
+8. **[queries.md](queries.md)** — `recorded.query(...)` filters, raw SQL
    via `connection()`, `Job.to_prompt()` for LLM consumption, schema
    reference.
 9. **[errors.md](errors.md)** — exception hierarchy, when each fires,

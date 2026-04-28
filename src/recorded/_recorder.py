@@ -8,7 +8,7 @@ Phase 2 Stream A additions over phase 1:
 - Reaper: on Recorder construction, any `running` row whose `started_at`
   predates `reaper_threshold_s` is flipped to `failed` and its subscribers
   resolved.
-- Read API: `list()` (filtered iterator), public `connection()` alias of
+- Read API: `query()` (filtered iterator), public `connection()` alias of
   `_connection()`, `last(status=...)` for symmetry.
 - Atomic-claim helper used by the worker.
 - Lazy worker lifecycle (start on first `.submit()`; cancelled and joined
@@ -246,7 +246,7 @@ class Recorder:
         rows = self._fetchall(sql, (kind, kind, status, status, n))
         return [_row_to_job(r) for r in rows]
 
-    def list(
+    def query(
         self,
         kind: str | None = None,
         status: str | Sequence[str] | None = None,
@@ -273,7 +273,7 @@ class Recorder:
         """
         order_norm = order.lower()
         if order_norm not in ("asc", "desc"):
-            raise ConfigurationError(f"list(order=...) must be 'asc' or 'desc', got {order!r}")
+            raise ConfigurationError(f"query(order=...) must be 'asc' or 'desc', got {order!r}")
 
         clauses: list[str] = []
         params: list[Any] = []
@@ -287,7 +287,7 @@ class Recorder:
             else:
                 statuses = tuple(status)
                 if not statuses:
-                    raise ConfigurationError("list(status=...) tuple/list must be non-empty.")
+                    raise ConfigurationError("query(status=...) tuple/list must be non-empty.")
                 placeholders = ",".join("?" * len(statuses))
                 clauses.append(f"status IN ({placeholders})")
                 params.extend(statuses)

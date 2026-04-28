@@ -92,7 +92,7 @@ multiple SQLite files:
 from recorded import Recorder
 
 with Recorder(path="/tmp/scratch.db") as r:
-    # r.last(), r.get(...), r.list(...), r.connection() all available
+    # r.last(), r.get(...), r.query(...), r.connection() all available
     ...
 ```
 

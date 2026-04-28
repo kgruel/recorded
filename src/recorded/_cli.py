@@ -79,7 +79,7 @@ def cmd_tail(
                 # Single query covers both terminal statuses; since= uses `>=`
                 # so we de-dup via seen_ids.
                 rows: list[Job] = list(
-                    r.list(
+                    r.query(
                         kind=args.kind,
                         status=("completed", "failed"),
                         since=watermark,

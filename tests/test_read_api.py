@@ -1,5 +1,5 @@
-"""Read-API contract: `recorded.list`, `recorded.connection`,
-`recorded.last(status=...)` for symmetry with `list()`."""
+"""Read-API contract: `recorded.query`, `recorded.connection`,
+`recorded.last(status=...)` for symmetry with `query()`."""
 
 from __future__ import annotations
 
@@ -64,11 +64,11 @@ async def test_last_with_status_filter(default_recorder):
     assert len(completed) == 3
 
 
-# ----- list() filters -----
+# ----- query() filters -----
 
 
 @pytest.mark.asyncio
-async def test_recorded_list_filters_by_kind_status_since_until_where_data(
+async def test_recorded_query_filters_by_kind_status_since_until_where_data(
     default_recorder,
 ):
     """Named test: combined-filter cases that exercise each parameter."""
@@ -93,44 +93,44 @@ async def test_recorded_list_filters_by_kind_status_since_until_where_data(
     await cancel({"customer_id": 9})  # 4
 
     # Filter by exact kind.
-    only_place = list(recorded.list(kind="broker.place_order"))
+    only_place = list(recorded.query(kind="broker.place_order"))
     assert {j.kind for j in only_place} == {"broker.place_order"}
     assert len(only_place) == 3
 
     # Glob across both kinds.
-    all_broker = list(recorded.list(kind="broker.*"))
+    all_broker = list(recorded.query(kind="broker.*"))
     assert {j.kind for j in all_broker} == {"broker.place_order", "broker.cancel_order"}
     assert len(all_broker) == 5
 
     # `where_data` equality on top-level keys.
-    cust7 = list(recorded.list(where_data={"customer_id": 7}))
+    cust7 = list(recorded.query(where_data={"customer_id": 7}))
     assert len(cust7) == 3  # 2 places + 1 cancel for cust 7
 
     # Multi-key where_data ANDs together.
-    cust7_completed = list(recorded.list(status="completed", where_data={"customer_id": 7}))
+    cust7_completed = list(recorded.query(status="completed", where_data={"customer_id": 7}))
     assert len(cust7_completed) == 3
 
     # since/until: clip to the future, expect empty.
     future = datetime.now(timezone.utc) + timedelta(hours=1)
-    assert list(recorded.list(since=future)) == []
+    assert list(recorded.query(since=future)) == []
     # until far in the past, expect empty.
     past = datetime.now(timezone.utc) - timedelta(hours=1)
-    assert list(recorded.list(until=past)) == []
+    assert list(recorded.query(until=past)) == []
 
     # since=str (already ISO) accepted.
     iso_now = _storage.now_iso()
-    assert list(recorded.list(until=iso_now))  # at least some rows
+    assert list(recorded.query(until=iso_now))  # at least some rows
 
 
 @pytest.mark.asyncio
-async def test_recorded_list_status_accepts_tuple_for_multi_status_query(
+async def test_recorded_query_status_accepts_tuple_for_multi_status_query(
     default_recorder,
 ):
-    """`list(status=("completed", "failed"))` issues a single SQL query
+    """`query(status=("completed", "failed"))` issues a single SQL query
     using `status IN (...)` rather than forcing the caller to merge two
     queries."""
 
-    @recorder(kind="t.list.multi_status")
+    @recorder(kind="t.query.multi_status")
     async def maybe_fail(should_fail: bool):
         if should_fail:
             raise RuntimeError("boom")
@@ -143,8 +143,8 @@ async def test_recorded_list_status_accepts_tuple_for_multi_status_query(
             pass
 
     rows = list(
-        recorded.list(
-            kind="t.list.multi_status",
+        recorded.query(
+            kind="t.query.multi_status",
             status=("completed", "failed"),
         )
     )
@@ -154,18 +154,18 @@ async def test_recorded_list_status_accepts_tuple_for_multi_status_query(
 
     # Empty tuple is rejected — silently matching nothing would be a footgun.
     with pytest.raises(ConfigurationError, match="non-empty"):
-        list(recorded.list(status=()))
+        list(recorded.query(status=()))
 
 
 @pytest.mark.asyncio
-async def test_recorded_list_since_until_canonicalizes_non_canonical_strings(
+async def test_recorded_query_since_until_canonicalizes_non_canonical_strings(
     default_recorder,
 ):
     """`since=`/`until=` accept non-canonical ISO strings (no microseconds,
     no Z suffix). They're parsed and reformatted so lex-comparison against
     the canonical stored form is correct — no silent boundary off-by-one."""
 
-    @recorder(kind="t.list.iso_canon")
+    @recorder(kind="t.query.iso_canon")
     async def f(i: int):
         return {"i": i}
 
@@ -175,32 +175,32 @@ async def test_recorded_list_since_until_canonicalizes_non_canonical_strings(
     # Stored timestamps are in canonical form (microseconds + Z). A non-
     # canonical user input must include all rows (since=well-in-the-past).
     far_past = "2000-01-01T00:00:00"  # no microseconds, no Z
-    rows = list(recorded.list(kind="t.list.iso_canon", since=far_past))
+    rows = list(recorded.query(kind="t.query.iso_canon", since=far_past))
     assert len(rows) == 3
 
     # And until=well-in-the-future must include all rows even with weird
     # but parseable suffix combinations.
     far_future = "2099-12-31T23:59:59"
-    rows = list(recorded.list(kind="t.list.iso_canon", until=far_future))
+    rows = list(recorded.query(kind="t.query.iso_canon", until=far_future))
     assert len(rows) == 3
 
     # A garbage string surfaces as ConfigurationError, not as a silent
     # mis-bound query.
     with pytest.raises(ConfigurationError, match="non-ISO8601"):
-        list(recorded.list(since="not-a-date"))
+        list(recorded.query(since="not-a-date"))
 
 
 @pytest.mark.asyncio
-async def test_recorded_list_returns_iterator_lazily(default_recorder, monkeypatch):
-    """Named test: `list()` returns an iterator (not a list); the SQL
+async def test_recorded_query_returns_iterator_lazily(default_recorder, monkeypatch):
+    """Named test: `query()` returns an iterator (not a list); the SQL
     query isn't issued until first `next()`.
 
     We monkeypatch `Recorder._fetchall` and assert it's called on
-    `next()`, not on the `list()` call itself.
+    `next()`, not on the `query()` call itself.
     """
 
     # Insert a row so there's something to fetch.
-    @recorder(kind="t.list.lazy")
+    @recorder(kind="t.query.lazy")
     async def f():
         return {"v": 1}
 
@@ -215,7 +215,7 @@ async def test_recorded_list_returns_iterator_lazily(default_recorder, monkeypat
 
     monkeypatch.setattr(Recorder, "_fetchall", spy)
 
-    it = recorded.list(kind="t.list.lazy")
+    it = recorded.query(kind="t.query.lazy")
     # Iterator returned, but no fetchall yet.
     assert isinstance(it, Iterator)
     assert calls == []
@@ -223,35 +223,35 @@ async def test_recorded_list_returns_iterator_lazily(default_recorder, monkeypat
     # First `next()` triggers the query.
     first = next(it)
     assert isinstance(first, Job)
-    assert first.kind == "t.list.lazy"
+    assert first.kind == "t.query.lazy"
     assert len(calls) == 1
 
 
-def test_list_rejects_where_data_keys_with_dots_or_dollars(recorder: Recorder):
+def test_query_rejects_where_data_keys_with_dots_or_dollars(recorder: Recorder):
     """Reject `where_data` keys that look like JSONPath but aren't."""
     with pytest.raises(ConfigurationError, match=r"'\.' or '\$'"):
-        list(recorder.list(where_data={"a.b": 1}))
+        list(recorder.query(where_data={"a.b": 1}))
     with pytest.raises(ConfigurationError, match=r"'\.' or '\$'"):
-        list(recorder.list(where_data={"$.a": 1}))
+        list(recorder.query(where_data={"$.a": 1}))
 
 
-def test_list_rejects_invalid_order(recorder: Recorder):
+def test_query_rejects_invalid_order(recorder: Recorder):
     with pytest.raises(ConfigurationError, match="must be 'asc' or 'desc'"):
-        list(recorder.list(order="random"))
+        list(recorder.query(order="random"))
 
 
 @pytest.mark.asyncio
-async def test_recorded_list_filters_by_idempotency_key(default_recorder):
-    """Named test: `list(key='kk')` returns only rows with that idempotency
+async def test_recorded_query_filters_by_idempotency_key(default_recorder):
+    """Named test: `query(key='kk')` returns only rows with that idempotency
     key (across kinds). Equality match on the `key` column."""
 
-    @recorder(kind="t.list.bykey")
+    @recorder(kind="t.query.bykey")
     async def fn(x):
         return {"x": x}
 
     # Seed: a couple of failed retries + a successful row, all under key 'kk',
     # plus one row under a different key, plus one with no key.
-    @recorder(kind="t.list.bykey.flaky")
+    @recorder(kind="t.query.bykey.flaky")
     async def flaky(x):
         raise RuntimeError("nope")
 
@@ -263,27 +263,27 @@ async def test_recorded_list_filters_by_idempotency_key(default_recorder):
     await fn(4, key="other")
     await fn(5)  # no key
 
-    by_key = list(recorded.list(key="kk", limit=50))
+    by_key = list(recorded.query(key="kk", limit=50))
     assert len(by_key) == 3
     assert {j.key for j in by_key} == {"kk"}
 
     # Filter combined with status — only the 2 failed retries.
-    failed_under_kk = list(recorded.list(key="kk", status="failed"))
+    failed_under_kk = list(recorded.query(key="kk", status="failed"))
     assert len(failed_under_kk) == 2
     assert all(j.status == "failed" for j in failed_under_kk)
 
 
 @pytest.mark.asyncio
-async def test_list_order_asc_returns_oldest_first(default_recorder):
-    @recorder(kind="t.list.order")
+async def test_query_order_asc_returns_oldest_first(default_recorder):
+    @recorder(kind="t.query.order")
     async def f(x):
         return {"x": x}
 
     for i in range(3):
         await f(i)
 
-    asc = list(recorded.list(kind="t.list.order", order="asc"))
+    asc = list(recorded.query(kind="t.query.order", order="asc"))
     assert [j.request for j in asc] == [0, 1, 2]
 
-    desc = list(recorded.list(kind="t.list.order", order="desc"))
+    desc = list(recorded.query(kind="t.query.order", order="desc"))
     assert [j.request for j in desc] == [2, 1, 0]

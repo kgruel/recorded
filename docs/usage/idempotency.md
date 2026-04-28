@@ -145,7 +145,7 @@ To inspect prior failed rows, use the read API. `last()` doesn't filter by
 `key`, so use `list()`:
 
 ```python
-list(recorded.list(
+list(recorded.query(
     kind="orders.place", key="order-42", status="failed", limit=10,
 ))
 ```

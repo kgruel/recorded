@@ -7,7 +7,7 @@ Public surface:
     - `attach_error(payload)` for structured error payloads on the failure path
     - `JobHandle` returned from `.submit()`
     - `Job` dataclass
-    - Module-level read API: `get`, `last`, `list`, `connection`
+    - Module-level read API: `get`, `last`, `query`, `connection`
     - `configure(...)` for the module-level default Recorder
 """
 
@@ -52,7 +52,7 @@ def last(
     return get_default().last(n, kind=kind, status=status)
 
 
-def list(  # noqa: A001 — module-level "list" mirrors WHY.md
+def query(
     kind: str | None = None,
     status: str | None = None,
     key: str | None = None,
@@ -63,7 +63,7 @@ def list(  # noqa: A001 — module-level "list" mirrors WHY.md
     order: str = "desc",
 ) -> Iterator[Job]:
     """Filtered iterator over jobs from the default Recorder."""
-    return get_default().list(
+    return get_default().query(
         kind=kind,
         status=status,
         key=key,
@@ -91,7 +91,7 @@ __all__ = [
     "connection",
     "get",
     "last",
-    "list",
+    "query",
     "recorder",
     # Exception hierarchy — re-exported so callers can `except recorded.X:`
     # without reaching into `recorded._errors`.

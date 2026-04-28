@@ -67,13 +67,13 @@ if job and job.status == "completed":
     print(job.response)
 ```
 
-## `recorded.list(...)`
+## `recorded.query(...)`
 
 For richer queries — equality predicates on `data` keys, time windows, exact
 key match. See [queries](queries.md) for the full surface.
 
 ```python
-for job in recorded.list(
+for job in recorded.query(
     kind="orders.*",
     status="completed",
     where_data={"customer_id": 7},
@@ -153,7 +153,7 @@ $ python -m recorded get 3a8f1c2d --prompt
 
 ### `tail`
 
-Stream new terminal rows as they land. Polls `recorded.list()` with a moving
+Stream new terminal rows as they land. Polls `recorded.query()` with a moving
 watermark; new completed/failed rows print as one-liners.
 
 ```bash

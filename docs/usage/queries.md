@@ -1,12 +1,12 @@
 # Queries
 
-Three layered surfaces for asking the log questions: `recorded.list(...)`
+Three layered surfaces for asking the log questions: `recorded.query(...)`
 for filtered iteration, `recorded.connection()` for raw SQL, and
 `Job.to_prompt()` for handing rows back to an LLM.
 
 > Architecture context: [`docs/HOW.md` — the read side](../HOW.md#the-read-side)
 
-## `recorded.list(...)`
+## `recorded.query(...)`
 
 A filtered iterator with equality predicates and time windows. The query is
 deferred until the first `next()` call.
@@ -14,7 +14,7 @@ deferred until the first `next()` call.
 ```python
 import recorded
 
-for job in recorded.list(
+for job in recorded.query(
     kind="orders.*",
     status="completed",
     where_data={"customer_id": 7, "region": "us-east"},
@@ -174,7 +174,7 @@ The CLI version: `python -m recorded get <job_id> --prompt`.
 **Threading several turns**:
 
 ```python
-recent = list(recorded.list(kind="agent.tool.*", status="completed", limit=10))
+recent = list(recorded.query(kind="agent.tool.*", status="completed", limit=10))
 context = "\n\n".join(j.to_prompt() for j in reversed(recent))
 
 # Hand `context` back to the model as conversation history
@@ -199,7 +199,7 @@ if jobs:
 **All retries for a given idempotency key:**
 
 ```python
-list(recorded.list(kind="orders.place", key="order-42", limit=20))
+list(recorded.query(kind="orders.place", key="order-42", limit=20))
 # Returns one currently-active row (pending/running/completed) plus all
 # prior failed rows for this key — the partial unique index allows
 # multiple `failed` rows per (kind, key).

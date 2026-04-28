@@ -327,7 +327,7 @@ Three surfaces, all on `Recorder`:
 |---|---|
 | `recorder.get(job_id) -> Job \| None` | single row by ID |
 | `recorder.last(n=10, *, kind=None, status=None) -> list[Job]` | last N, glob on kind |
-| `recorder.list(kind, status, key, since, until, where_data, limit, order) -> Iterator[Job]` | filtered iterator with deferred query |
+| `recorder.query(kind, status, key, since, until, where_data, limit, order) -> Iterator[Job]` | filtered iterator with deferred query |
 | `recorder.connection() -> sqlite3.Connection` | escape hatch for arbitrary SQL |
 
 `where_data` compiles to `json_extract(data_json, '$.key') = ?` —

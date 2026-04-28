@@ -171,7 +171,7 @@ async def test_idempotency_retry_failed_false_raises_joined_sibling_failed(
     Per the wrap-transparency principle: keyed call surfaces always
     either return the response OR raise — never return a `Job`. To
     inspect the prior failed row, use the read API
-    (`recorded.list(kind=..., status='failed', ...)`)."""
+    (`recorded.query(kind=..., status='failed', ...)`)."""
     from recorded._errors import JoinedSiblingFailedError
 
     n = 0

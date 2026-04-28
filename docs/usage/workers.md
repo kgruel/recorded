@@ -56,7 +56,7 @@ handle = build_report.submit(spec, key="daily-2026-04-27")
 # Later, from another process or a fresh run:
 job = recorded.get(handle.job_id)  # if you saved the id
 # or
-jobs = list(recorded.list(kind="reports.build", key="daily-2026-04-27"))
+jobs = list(recorded.query(kind="reports.build", key="daily-2026-04-27"))
 ```
 
 ## The worker
