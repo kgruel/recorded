@@ -82,20 +82,17 @@ def cmd_tail(
         seen_ids: set[str] = set()
         try:
             while True:
-                # `list` filters by a single status; query each terminal status
-                # and merge. since= uses `>=` so we de-dup via seen_ids.
-                rows: list[Job] = []
-                for status in ("completed", "failed"):
-                    rows.extend(
-                        r.list(
-                            kind=args.kind,
-                            status=status,
-                            since=watermark,
-                            limit=1000,
-                            order="asc",
-                        )
+                # Single query covers both terminal statuses; since= uses `>=`
+                # so we de-dup via seen_ids.
+                rows: list[Job] = list(
+                    r.list(
+                        kind=args.kind,
+                        status=("completed", "failed"),
+                        since=watermark,
+                        limit=1000,
+                        order="asc",
                     )
-                rows.sort(key=lambda j: j.submitted_at)
+                )
                 new_max = watermark
                 for job in rows:
                     if job.id in seen_ids:

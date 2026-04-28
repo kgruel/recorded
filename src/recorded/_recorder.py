@@ -253,7 +253,7 @@ class Recorder:
     def list(
         self,
         kind: str | None = None,
-        status: str | None = None,
+        status: str | tuple[str, ...] | list[str] | None = None,
         key: str | None = None,
         since: str | datetime | None = None,
         until: str | datetime | None = None,
@@ -263,9 +263,12 @@ class Recorder:
     ) -> Iterator[Job]:
         """Filtered iterator over jobs. Query is deferred until first `next()`.
 
-        `kind` accepts a glob (`broker.*`). `where_data` is equality on
-        top-level keys of `data_json` only — multiple keys AND together.
-        Anything richer goes through `connection()` and raw SQL.
+        `kind` accepts a glob (`broker.*`). `status` accepts a single string
+        (`"completed"`) or a tuple/list (`("completed", "failed")`) — useful
+        for tail-style consumers that want all terminal rows in one query.
+        `where_data` is equality on top-level keys of `data_json` only —
+        multiple keys AND together. Anything richer goes through
+        `connection()` and raw SQL.
 
         The iterator buffers all matched rows internally on first `next()`
         rather than streaming a live cursor: holding the cursor across
@@ -284,8 +287,18 @@ class Recorder:
             clauses.append("kind GLOB ?")
             params.append(kind)
         if status is not None:
-            clauses.append("status = ?")
-            params.append(status)
+            if isinstance(status, str):
+                clauses.append("status = ?")
+                params.append(status)
+            else:
+                statuses = tuple(status)
+                if not statuses:
+                    raise ConfigurationError(
+                        "list(status=...) tuple/list must be non-empty."
+                    )
+                placeholders = ",".join("?" * len(statuses))
+                clauses.append(f"status IN ({placeholders})")
+                params.extend(statuses)
         if key is not None:
             clauses.append("key = ?")
             params.append(key)

@@ -125,6 +125,41 @@ async def test_recorded_list_filters_by_kind_status_since_until_where_data(
 
 
 @pytest.mark.asyncio
+async def test_recorded_list_status_accepts_tuple_for_multi_status_query(
+    default_recorder,
+):
+    """`list(status=("completed", "failed"))` issues a single SQL query
+    using `status IN (...)` rather than forcing the caller to merge two
+    queries."""
+
+    @recorder(kind="t.list.multi_status")
+    async def maybe_fail(should_fail: bool):
+        if should_fail:
+            raise RuntimeError("boom")
+        return {"ok": True}
+
+    for sf in [True, False, True, False]:
+        try:
+            await maybe_fail(sf)
+        except RuntimeError:
+            pass
+
+    rows = list(
+        recorded.list(
+            kind="t.list.multi_status",
+            status=("completed", "failed"),
+        )
+    )
+    assert len(rows) == 4
+    statuses = {r.status for r in rows}
+    assert statuses == {"completed", "failed"}
+
+    # Empty tuple is rejected — silently matching nothing would be a footgun.
+    with pytest.raises(ConfigurationError, match="non-empty"):
+        list(recorded.list(status=()))
+
+
+@pytest.mark.asyncio
 async def test_recorded_list_since_until_canonicalizes_non_canonical_strings(
     default_recorder,
 ):
