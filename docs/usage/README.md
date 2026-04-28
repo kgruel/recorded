@@ -52,10 +52,10 @@ tour; the **By need** table below it is a faster path to a specific goal.
 
 ## Adjacent docs
 
-- **Architecture tour:** [`../OVERVIEW.md`](../OVERVIEW.md) — schema,
+- **Architecture tour:** [`../HOW.md`](../HOW.md) — schema,
   lifecycle, the wait primitive, idempotency mechanics, the reaper, the
   read side. Start here for contributors.
-- **Authoritative spec:** [`../DESIGN.md`](../DESIGN.md) — the "why"
+- **Authoritative spec:** [`../WHY.md`](../WHY.md) — the "why"
   behind the slot abstraction, three-write lifecycle, dissolution test,
   every load-bearing decision.
 - **Runnable examples:** [`../examples/`](../examples/) — LLM-CLI

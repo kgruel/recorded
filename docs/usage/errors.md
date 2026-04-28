@@ -219,4 +219,4 @@ unchanged.
 This is part of the wrap-transparency invariant: removing `@recorder` from
 the function does not change the exception types your callers handle.
 
-> Architecture context: [`docs/DESIGN.md` — wrap-transparency](../DESIGN.md#2-wrap-transparency-scoped-to-basic)
+> Architecture context: [`docs/WHY.md` — wrap-transparency](../WHY.md#2-wrap-transparency-scoped-to-basic)

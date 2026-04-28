@@ -4,7 +4,7 @@ Three surfaces for inspecting the log: the Python read API, the CLI, and the
 raw SQLite file. They all read from the same `jobs` table — pick whichever
 is most ergonomic for your task.
 
-> Architecture context: [`docs/OVERVIEW.md` — the read side](../OVERVIEW.md#the-read-side)
+> Architecture context: [`docs/HOW.md` — the read side](../HOW.md#the-read-side)
 
 ## The `Job` dataclass
 

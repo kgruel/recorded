@@ -72,7 +72,7 @@ def test_passthrough_adapter_dumps_dataclass_instance_to_native():
     Without this, returning a dataclass from a `@recorder` function
     without declaring `response=Model` would crash `json.dumps` in
     `_write_completion` and mark the (successful!) row failed —
-    violating DESIGN.md's audit invariant.
+    violating WHY.md's audit invariant.
     """
     a = make_adapter()
     src = _OrderView(customer_id=1, total_cents=200, note="x")

@@ -4,7 +4,7 @@ The decorator is the spine of `recorded`. Every other feature — idempotency,
 background execution, typed slots — layers on top of a function that's been
 wrapped with `@recorder`.
 
-> Architecture context: [`docs/OVERVIEW.md` — trace a call](../OVERVIEW.md#trace-a-call-bare-path)
+> Architecture context: [`docs/HOW.md` — trace a call](../HOW.md#trace-a-call-bare-path)
 
 ## Bare usage
 
@@ -121,7 +121,7 @@ your call sites would still work. The only differences vanish — the audit
 trail and the keyed-call surfaces (`.submit()`, `JobHandle.wait()`,
 `JoinedSiblingFailedError`).
 
-> Architecture context: [`docs/DESIGN.md` — wrap-transparency, scoped to basic](../DESIGN.md#2-wrap-transparency-scoped-to-basic)
+> Architecture context: [`docs/WHY.md` — wrap-transparency, scoped to basic](../WHY.md#2-wrap-transparency-scoped-to-basic)
 
 ## What the wrapper adds
 

@@ -133,7 +133,7 @@ class Recorder:
             self._reap_stuck_running_unlocked(self._conn)
             return self._conn
 
-    # Public alias of the connection accessor. DESIGN.md names
+    # Public alias of the connection accessor. WHY.md names
     # `recorded.connection()` (and `Recorder.connection()`) as the escape
     # hatch for raw SQL. `_connection` stays as a private alias since the
     # phase-1 test suite reaches into it directly; touching those test

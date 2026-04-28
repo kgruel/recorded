@@ -156,7 +156,7 @@ def test_unrecordable_response_marks_row_failed_and_returns_result(
 
 # --- audit invariant: typed-instance returns without `response=Model` ------
 #
-# DESIGN.md's audit invariant says the raw response is always recorded.
+# WHY.md's audit invariant says the raw response is always recorded.
 # Before the passthrough adapter learned `_to_native`, returning a
 # dataclass / pydantic instance without declaring `response=Model`
 # crashed `json.dumps` and marked the (successful) row failed —

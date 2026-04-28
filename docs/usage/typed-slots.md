@@ -5,7 +5,7 @@ A `recorded` row has four JSON columns: `request`, `response`, `data`,
 model. Adding type definitions buys you input validation, structured query
 shapes, and rehydrated typed objects on the read side.
 
-> Architecture context: [`docs/OVERVIEW.md` — the slot primitive](../OVERVIEW.md#the-single-primitive-the-slot)
+> Architecture context: [`docs/HOW.md` — the slot primitive](../HOW.md#the-single-primitive-the-slot)
 
 ## The four slots
 
@@ -243,5 +243,5 @@ the `recorded` logger, and the wrapped function's natural value is still
 returned to the caller — wrap-transparency requires bare-call surfaces never
 raise an exception class the wrapped function wouldn't.
 
-> Architecture context: [`docs/DESIGN.md` — wrap-transparency](../DESIGN.md#2-wrap-transparency-scoped-to-basic)
-> · [`docs/DESIGN.md` — mid-execution attach](../DESIGN.md#mid-execution-attach)
+> Architecture context: [`docs/WHY.md` — wrap-transparency](../WHY.md#2-wrap-transparency-scoped-to-basic)
+> · [`docs/WHY.md` — mid-execution attach](../WHY.md#mid-execution-attach)

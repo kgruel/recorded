@@ -52,7 +52,7 @@ def last(
     return get_default().last(n, kind=kind, status=status)
 
 
-def list(  # noqa: A001 — module-level "list" mirrors DESIGN.md
+def list(  # noqa: A001 — module-level "list" mirrors WHY.md
     kind: str | None = None,
     status: str | None = None,
     key: str | None = None,

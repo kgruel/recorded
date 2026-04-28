@@ -221,7 +221,7 @@ def _build_data_json(
 ) -> str | None:
     """Compose `data_json` from optional projection + attach buffer.
 
-    Conflict rule (DESIGN.md): the projection populates initial keys;
+    Conflict rule (WHY.md): the projection populates initial keys;
     attaches merge in last-write-wins.
 
     Projection runs only when the response shape matches the data slot's

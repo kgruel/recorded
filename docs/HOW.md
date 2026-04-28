@@ -1,8 +1,14 @@
-# `recorded` — architecture overview
+# `recorded` — how it works
 
-A guided tour of the codebase: what it is, how the pieces fit, and why
-the load-bearing decisions are the way they are. For the authoritative
-design spec, see `DESIGN.md`. For local-dev setup, see `README.md`.
+A guided walk through the codebase: schema, lifecycle, trace a call,
+the wait primitive, idempotency mechanics, the reaper, the read side.
+Read top-to-bottom for orientation, or jump in by section if you know
+what you need.
+
+> **What's in:** the architecture and mechanics of the running library —
+> what each subsystem does, how the pieces fit, where things live.
+> **What's not:** *why* those choices were made (see [WHY.md](WHY.md)),
+> or *how to use* the library (see [usage/](usage/)).
 
 ## The premise
 
@@ -69,8 +75,11 @@ The partial index does the load-bearing work for idempotency. Multiple
 
 ## The lifecycle
 
-Bare and submitted calls now diverge — `pending` exclusively means
-"queued for the worker." See `DESIGN.md` Addendum §3 for the rationale.
+Bare and submitted calls diverge: `pending` exclusively means
+"queued for the worker." Bare-call rows skip `pending` entirely and
+insert directly as `running`. The rationale — and the bug class this
+structurally eliminates — lives in [WHY.md](WHY.md) under the lifecycle
+decisions.
 
 ```
 bare:        INSERT running                         →  UPDATE {completed|failed}
@@ -121,9 +130,10 @@ What happens (`_decorator.py`):
    into the error buffer).
 7. Branch:
    - **Success**: `_write_completion()` serializes response + data via
-     adapters, projects response into data via `_project_response`,
-     merges with the attach buffer, stashes the live result if `key` is
-     set, calls `_mark_completed(...)` — terminal write. Returns the
+     adapters (data auto-projects from response via the data adapter's
+     `.project(response)`), merges with the attach buffer, stashes the
+     live result if `key` is set, calls `_mark_completed(...)` —
+     terminal write. Returns the
      function's natural value (transparency invariant). If
      `_write_completion` itself raises, the row is marked failed, a
      warning is logged on the `recorded` logger, and `result` is still
@@ -176,8 +186,9 @@ lifecycle invariant.
 
 ## The wait primitive — one mechanism, four surfaces
 
-Phase 2's load-bearing refactor. Before it, idempotency-join used a
-5 ms sync-poll. After:
+A single subscribe/resolve protocol that serves every "block until this
+row reaches terminal status" surface. Sync waiters and async waiters
+share one mechanism, loop-agnostic.
 
 ```
 Recorder._notify_subscribers: dict[job_id, list[concurrent.futures.Future]]
@@ -282,7 +293,7 @@ ContextVar (not `threading.local`) because:
 `attach_error(payload)` writes to `error_buffer` with last-write-wins.
 Both are silent no-ops outside an active context — wrap-transparency:
 removing `@recorder` shouldn't require deleting `attach()` calls. (See
-`DESIGN.md` Addendum §2.)
+[WHY.md](WHY.md) on the wrap-transparency principle.)
 
 ## The reaper
 
@@ -322,7 +333,7 @@ Three surfaces, all on `Recorder`:
 `where_data` compiles to `json_extract(data_json, '$.key') = ?` —
 equality on top-level keys only, multiple keys AND together. Anything
 richer (ranges, aggregations, joins) goes through `connection()` raw
-SQL. **No DSL line** — held throughout phase 2.
+SQL. **No DSL line** — equality-only on top-level keys is the held boundary.
 
 Module-level `recorded.last/list/get/connection` delegate to the
 lazy-default `Recorder` (constructed on first use, configurable via
@@ -370,9 +381,7 @@ unnecessarily spawn a worker thread the CLI doesn't use).
 `tail` polls `list()` with a moving watermark + boundary-id set for
 de-dup.
 
-## The cross-cutting discipline
-
-Three principles tie the library together:
+## Three invariants the runtime preserves
 
 1. **Audit invariant**: the raw response is always recorded unless the
    caller opts into lossy `response=Model`. The passthrough adapter
@@ -386,12 +395,8 @@ Three principles tie the library together:
    return a `Job` for failure paths. `JoinedSiblingFailedError` is the
    universal "the row you joined was failed" signal.
 
-Plus the dissolution test as the "should this exist?" gate: can the
-proposed feature be expressed as a property of what already exists?
-The single-table schema, the slot-with-adapter primitive, the
-three-write lifecycle, the one-notify-primitive — these survived
-because they passed dissolution. Honker, schema_version, ULID,
-dry-run, aggregations didn't.
+The reasoning behind these — and the dissolution test that decided what
+survived to become these invariants — lives in [WHY.md](WHY.md).
 
 ## File map
 
@@ -399,7 +404,7 @@ dry-run, aggregations didn't.
 src/recorded/
   __init__.py     — public surface
   __main__.py     — `python -m recorded` shim
-  _adapter.py     — slot adapter (passthrough/dataclass/pydantic)
+  _adapter.py     — Adapter ABC + Passthrough/Dataclass/Pydantic concrete subclasses
   _cli.py         — last/get/tail subcommands
   _context.py     — current_job ContextVar + attach() + attach_error()
   _decorator.py   — @recorder + thin call-surface wrappers (bare sync, bare async, .submit)
@@ -415,4 +420,4 @@ src/recorded/
   fastapi.py      — capture_request(request) (duck-typed)
 ```
 
-~3500 LOC of core in 14 files; 150 tests.
+~3700 LOC of core in 15 files; 167 tests.

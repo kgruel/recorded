@@ -5,7 +5,7 @@ Two patterns for getting a `Recorder`: the module-level singleton (via
 want the singleton; the explicit form covers tests, FastAPI dependency
 injection, and multi-database scenarios.
 
-> Architecture context: [`docs/OVERVIEW.md` — lifecycle integration](../OVERVIEW.md#lifecycle-integration)
+> Architecture context: [`docs/HOW.md` — lifecycle integration](../HOW.md#lifecycle-integration)
 
 ## `recorded.configure(...)`
 

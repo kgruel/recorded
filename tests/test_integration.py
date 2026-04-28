@@ -391,7 +391,7 @@ async def test_slow_response_records_realistic_duration(default_recorder, httpse
 async def test_query_real_recorded_data(default_recorder, httpserver):
     """Exercise the read API against rows produced by real recorded calls.
 
-    `recorded.list()` and `recorded.connection()` are specced in DESIGN.md
+    `recorded.list()` and `recorded.connection()` are specced in WHY.md
     but not implemented in phase 1 (only `get()` and `last()` ship). We
     drive the equivalents through `last()` + `Recorder._connection()` and
     document the API gap in PROGRESS_INTEGRATION.md.

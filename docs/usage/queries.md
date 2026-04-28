@@ -4,7 +4,7 @@ Three layered surfaces for asking the log questions: `recorded.list(...)`
 for filtered iteration, `recorded.connection()` for raw SQL, and
 `Job.to_prompt()` for handing rows back to an LLM.
 
-> Architecture context: [`docs/OVERVIEW.md` — the read side](../OVERVIEW.md#the-read-side)
+> Architecture context: [`docs/HOW.md` — the read side](../HOW.md#the-read-side)
 
 ## `recorded.list(...)`
 

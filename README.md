@@ -135,8 +135,8 @@ skip to the one you need.
 
 Or jump in by need — see the [usage guide index](docs/usage/README.md).
 
-**Architecture:** [docs/OVERVIEW.md](docs/OVERVIEW.md) is the contributor
-tour; [docs/DESIGN.md](docs/DESIGN.md) is the authoritative spec.
+**Architecture:** [docs/HOW.md](docs/HOW.md) is the contributor
+tour; [docs/WHY.md](docs/WHY.md) is the authoritative spec.
 
 **Runnable examples:** [docs/examples/](docs/examples/) — LLM-CLI replay,
 FastAPI service, batch HTTP consumer.

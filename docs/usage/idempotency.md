@@ -7,7 +7,7 @@ call **joins** the existing row rather than re-running the function.
 This is the feature you reach for when calling APIs that charge per request,
 make external state changes, or shouldn't double-fire on retries.
 
-> Architecture context: [`docs/OVERVIEW.md` — the partial-unique-index trick](../OVERVIEW.md#idempotency--the-partial-unique-index-trick)
+> Architecture context: [`docs/HOW.md` — the partial-unique-index trick](../HOW.md#idempotency--the-partial-unique-index-trick)
 
 ## The basic shape
 

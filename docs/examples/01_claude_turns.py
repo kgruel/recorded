@@ -8,7 +8,7 @@ and feed them into a follow-up question. The library demos itself.
 Setup (60 seconds):
     pip install recorded
     # have `claude` (or your preferred CLI) installed and logged in
-    cd /path/to/sqlite-api-job        # so DESIGN.md is readable
+    cd /path/to/sqlite-api-job        # so WHY.md is readable
     python docs/examples/01_claude_turns.py
 
 What this script does, in three beats:
@@ -66,11 +66,11 @@ def main():
     # ============================================================
     print(">>> Asking the CLI to explain `recorded`...\n")
 
-    print(ask("Read DESIGN.md — give me a one-paragraph overview of this library."))
+    print(ask("Read WHY.md — give me a one-paragraph overview of this library."))
     print()
-    print(ask("Read DESIGN.md — what is a 'slot' in this library?"))
+    print(ask("Read WHY.md — what is a 'slot' in this library?"))
     print()
-    print(ask("Read DESIGN.md — how does the key= idempotency argument work?"))
+    print(ask("Read WHY.md — how does the key= idempotency argument work?"))
     print()
 
     # ============================================================

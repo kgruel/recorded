@@ -4,7 +4,7 @@ Use `wrapper.submit(...)` to enqueue a job for asynchronous execution. The
 call returns immediately with a `JobHandle`; a background worker picks up
 the row and runs the wrapped function on a dedicated asyncio loop.
 
-> Architecture context: [`docs/OVERVIEW.md` — submitted-call trace](../OVERVIEW.md#trace-a-call-submitted-path)
+> Architecture context: [`docs/HOW.md` — submitted-call trace](../HOW.md#trace-a-call-submitted-path)
 
 ## Submitting a job
 
