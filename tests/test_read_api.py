@@ -125,6 +125,39 @@ async def test_recorded_list_filters_by_kind_status_since_until_where_data(
 
 
 @pytest.mark.asyncio
+async def test_recorded_list_since_until_canonicalizes_non_canonical_strings(
+    default_recorder,
+):
+    """`since=`/`until=` accept non-canonical ISO strings (no microseconds,
+    no Z suffix). They're parsed and reformatted so lex-comparison against
+    the canonical stored form is correct — no silent boundary off-by-one."""
+
+    @recorder(kind="t.list.iso_canon")
+    async def f(i: int):
+        return {"i": i}
+
+    for i in range(3):
+        await f(i)
+
+    # Stored timestamps are in canonical form (microseconds + Z). A non-
+    # canonical user input must include all rows (since=well-in-the-past).
+    far_past = "2000-01-01T00:00:00"  # no microseconds, no Z
+    rows = list(recorded.list(kind="t.list.iso_canon", since=far_past))
+    assert len(rows) == 3
+
+    # And until=well-in-the-future must include all rows even with weird
+    # but parseable suffix combinations.
+    far_future = "2099-12-31T23:59:59"
+    rows = list(recorded.list(kind="t.list.iso_canon", until=far_future))
+    assert len(rows) == 3
+
+    # A garbage string surfaces as ConfigurationError, not as a silent
+    # mis-bound query.
+    with pytest.raises(ConfigurationError, match="non-ISO8601"):
+        list(recorded.list(since="not-a-date"))
+
+
+@pytest.mark.asyncio
 async def test_recorded_list_returns_iterator_lazily(default_recorder, monkeypatch):
     """Named test: `list()` returns an iterator (not a list); the SQL
     query isn't issued until first `next()`.

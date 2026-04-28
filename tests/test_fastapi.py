@@ -108,6 +108,98 @@ def test_fastapi_capture_request_round_trips_through_request_slot(
     assert job.request["body"] == "payload-bytes"
 
 
+def test_fastapi_capture_request_redacts_secret_headers_by_default():
+    """`Authorization`, `Cookie`, `X-Api-Key` etc. are replaced with a marker
+    rather than stored verbatim — operator+DB are not implicit secret stores."""
+    captured: list = []
+    client = TestClient(_make_app(captured))
+    resp = client.post(
+        "/echo",
+        content=b"{}",
+        headers={
+            "Authorization": "Bearer s3cr3t",
+            "Cookie": "session=abc123",
+            "X-Api-Key": "key-42",
+            "X-Custom": "kept",
+        },
+    )
+    assert resp.status_code == 200
+    h = captured[0]["headers"]
+    assert h["authorization"] == "<redacted>"
+    assert h["cookie"] == "<redacted>"
+    assert h["x-api-key"] == "<redacted>"
+    # Non-secret headers pass through.
+    assert h["x-custom"] == "kept"
+
+
+def test_fastapi_capture_request_redact_headers_override():
+    """Custom `redact_headers=` replaces the default set."""
+    app = FastAPI()
+    captured: list = []
+
+    @app.post("/x")
+    async def handler(request: Request):
+        env = await recorded_fastapi.capture_request(
+            request, redact_headers=["x-custom"], redact_value="***"
+        )
+        captured.append(env)
+        return {"ok": True}
+
+    client = TestClient(app)
+    client.post(
+        "/x",
+        content=b"",
+        headers={"X-Custom": "secret", "Authorization": "Bearer kept"},
+    )
+    h = captured[0]["headers"]
+    assert h["x-custom"] == "***"
+    # Authorization is no longer in the override set, so it passes through.
+    assert h["authorization"] == "Bearer kept"
+
+
+def test_fastapi_capture_request_allow_headers_drops_others():
+    """`allow_headers=` is an allowlist — anything not listed is dropped."""
+    app = FastAPI()
+    captured: list = []
+
+    @app.post("/x")
+    async def handler(request: Request):
+        env = await recorded_fastapi.capture_request(
+            request, allow_headers=["x-trace"]
+        )
+        captured.append(env)
+        return {"ok": True}
+
+    client = TestClient(app)
+    client.post(
+        "/x",
+        content=b"",
+        headers={"X-Trace": "abc", "Authorization": "Bearer s3cr3t"},
+    )
+    h = captured[0]["headers"]
+    assert h == {"x-trace": "abc"}
+
+
+def test_fastapi_capture_request_allow_and_redact_mutually_exclusive():
+    import asyncio
+
+    class _Stub:
+        method = "GET"
+        url = type("U", (), {"path": "/"})()
+        headers: dict = {}
+        query_params: dict = {}
+
+        async def body(self):
+            return b""
+
+    with pytest.raises(TypeError, match="not both"):
+        asyncio.run(
+            recorded_fastapi.capture_request(
+                _Stub(), redact_headers=["a"], allow_headers=["b"]
+            )
+        )
+
+
 def test_fastapi_capture_request_rejects_non_request_shaped():
     """Duck-typing failure surfaces a clear `TypeError`, not an opaque
     `AttributeError` from deep inside the helper."""

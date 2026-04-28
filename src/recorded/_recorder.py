@@ -28,7 +28,7 @@ from typing import Any
 
 from . import _registry, _storage
 from ._errors import ConfigurationError, RecorderClosedError
-from ._types import Job
+from ._types import Job, _parse_iso
 
 # Default join timeout for `JobHandle.wait()` / `wait_sync()`. Stream C
 # wires this through `recorded.configure(join_timeout_s=...)` and a per-call
@@ -583,8 +583,20 @@ _MISSING: Any = object()
 
 
 def _normalize_iso(value: str | datetime) -> str:
+    """Canonicalize a since=/until= argument to the stored timestamp format.
+
+    Strings are parsed and reformatted so non-canonical inputs (no microseconds,
+    no Z suffix) lex-compare correctly against canonical stored values. A bad
+    string surfaces as `ConfigurationError` rather than a silent off-by-one.
+    """
     if isinstance(value, str):
-        return value
+        try:
+            parsed = _parse_iso(value)
+        except ValueError as e:
+            raise ConfigurationError(
+                f"since=/until= got non-ISO8601 string {value!r}: {e}"
+            ) from e
+        return _storage.format_iso(parsed)
     return _storage.format_iso(value)
 
 

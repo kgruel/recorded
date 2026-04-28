@@ -85,5 +85,13 @@ class Job:
         return "\n".join(lines)
 
 
+# Zero-width space inserted between the three backticks; renders identically
+# to the eye but breaks the fence sequence so a payload containing ``` cannot
+# escape the surrounding ```json fence in to_prompt() output.
+_FENCE_BREAK = "``​`"
+
+
 def _pretty(value: Any) -> str:
-    return json.dumps(value, indent=2, sort_keys=False, default=str)
+    return json.dumps(value, indent=2, sort_keys=False, default=str).replace(
+        "```", _FENCE_BREAK
+    )

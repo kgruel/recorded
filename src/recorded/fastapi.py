@@ -24,12 +24,34 @@ doesn't, because we don't import FastAPI here.
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from typing import Any
 
 _REQUIRED_ATTRS = ("method", "url", "headers", "query_params")
 
+# Headers that commonly carry credentials. Recorded verbatim, they persist as
+# secrets in jobs.db — a quiet exfiltration risk for anyone with read access
+# to the DB. Case-insensitive (matched after `.lower()`).
+DEFAULT_REDACT_HEADERS: frozenset[str] = frozenset(
+    {
+        "authorization",
+        "proxy-authorization",
+        "cookie",
+        "set-cookie",
+        "x-api-key",
+        "x-auth-token",
+        "x-csrf-token",
+    }
+)
 
-async def capture_request(request: Any) -> dict[str, Any]:
+
+async def capture_request(
+    request: Any,
+    *,
+    redact_headers: Iterable[str] | None = None,
+    allow_headers: Iterable[str] | None = None,
+    redact_value: str = "<redacted>",
+) -> dict[str, Any]:
     """Snapshot an HTTP request into a JSON-serializable envelope.
 
     Returns:
@@ -41,10 +63,25 @@ async def capture_request(request: Any) -> dict[str, Any]:
             "body":   str | None,          # utf-8 decoded, or None if empty
         }
 
+    Header policy: secret-bearing headers (`Authorization`, `Cookie`,
+    `X-Api-Key`, etc. — see `DEFAULT_REDACT_HEADERS`) are replaced with
+    `redact_value` rather than stored verbatim. Override via:
+
+    - `redact_headers=` — case-insensitive iterable; replaces the default set.
+    - `allow_headers=` — case-insensitive iterable; only these headers are
+      kept, all others dropped. Mutually exclusive with `redact_headers`.
+    - `redact_value=` — marker string ("<redacted>" by default).
+
     Raises `TypeError` if the request object doesn't expose the expected
     Starlette-shaped attributes — this is how we duck-type without
     importing FastAPI/Starlette.
     """
+    if redact_headers is not None and allow_headers is not None:
+        raise TypeError(
+            "capture_request: pass either redact_headers= or allow_headers=, "
+            "not both."
+        )
+
     missing = [a for a in _REQUIRED_ATTRS if not hasattr(request, a)]
     if missing:
         raise TypeError(
@@ -62,12 +99,30 @@ async def capture_request(request: Any) -> dict[str, Any]:
     else:
         body = None
 
+    if allow_headers is not None:
+        allow = {h.lower() for h in allow_headers}
+        headers = {
+            k.lower(): v
+            for k, v in request.headers.items()
+            if k.lower() in allow
+        }
+    else:
+        redact = (
+            {h.lower() for h in redact_headers}
+            if redact_headers is not None
+            else DEFAULT_REDACT_HEADERS
+        )
+        headers = {
+            k.lower(): (redact_value if k.lower() in redact else v)
+            for k, v in request.headers.items()
+        }
+
     return {
         "method": request.method,
         "path": request.url.path,
         "query": dict(request.query_params),
         # Case-fold header keys: HTTP headers are case-insensitive, and
         # mixing cases across requests would corrupt downstream queries.
-        "headers": {k.lower(): v for k, v in request.headers.items()},
+        "headers": headers,
         "body": body,
     }
