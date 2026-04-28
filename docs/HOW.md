@@ -389,8 +389,44 @@ constraints apply:
   does. Direct-construction code paths must use `with Recorder(...) as r:`
   or call `r.shutdown()` explicitly; otherwise the daemon worker is killed
   at interpreter teardown, converting in-flight successes into
-  `CancelledError` rows. A module-level atexit hook logs a warning when
-  this hazard is detected.
+  `CancelledError` rows. A module-level atexit hook surfaces a warning
+  when this hazard is detected (see *Warnings policy* below).
+
+## Warnings policy
+
+The library emits two distinct categories of warning, surfaced through
+different channels:
+
+- **Lifecycle / usage hazards** — "your code is doing something the
+  library can't safely handle." Examples: dirty-recorder at interpreter
+  exit, worker drain timeout. These emit BOTH:
+  - `_logger.warning(...)` on the `recorded` logger (covers structured-
+    logging deployments where stderr isn't routed)
+  - `warnings.warn(msg, recorded.RecordedWarning, stacklevel=...)`
+    (covers test-discipline users running `pytest -W error::recorded.RecordedWarning`,
+    and surfaces at interactive prompts)
+
+- **Informational telemetry** — "an observation you may want to act on,
+  not necessarily misuse." Example: data-projection drift warnings.
+  These emit logger-only — they are observations, not signals to fix
+  the code path that triggered them.
+
+`recorded.RecordedWarning` is a `RuntimeWarning` subclass; users who
+want to treat all library warnings as errors can:
+
+```python
+import warnings, recorded
+warnings.filterwarnings("error", category=recorded.RecordedWarning)
+```
+
+…or via the pytest CLI:
+
+```
+pytest -W error::recorded.RecordedWarning
+```
+
+Future hazard sites should follow this dual-channel convention; new
+informational telemetry should stay logger-only.
 
 ## CLI
 

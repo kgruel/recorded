@@ -27,6 +27,30 @@ class RecordedError(Exception):
     """Root for library-raised errors."""
 
 
+# --- Warnings ---------------------------------------------------------------
+
+
+class RecordedWarning(RuntimeWarning):
+    """Lifecycle / usage hazards the library surfaces via `warnings.warn`.
+
+    Subclasses `RuntimeWarning` so `python -W error::RuntimeWarning` and
+    `pytest -W error::RuntimeWarning` catch all of them; the dedicated
+    subclass also lets users filter recorded-specific warnings precisely
+    via `warnings.filterwarnings("error", category=recorded.RecordedWarning)`.
+
+    Policy (see `docs/HOW.md::Warnings policy`):
+
+    - **Lifecycle / usage hazards** (e.g. dirty-recorder at exit, worker
+      drain timeout) emit BOTH a `_logger.warning(...)` AND a
+      `warnings.warn(..., RecordedWarning)`. Logger covers structured-
+      logging deployments; warnings.warn covers test-discipline users
+      (`pytest -W error`) and interactive surfacing.
+    - **Informational telemetry** (e.g. data-projection drift) emits
+      logger only — these are observations the user may act on, not
+      misuse the library is signalling.
+    """
+
+
 # --- Usage errors -----------------------------------------------------------
 
 

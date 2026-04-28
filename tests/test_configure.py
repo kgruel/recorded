@@ -172,8 +172,9 @@ def test_atexit_warns_when_direct_recorder_started_worker_but_never_shut_down(
 ):
     """Subprocess: build a Recorder directly, submit (which lazy-starts the
     worker), exit without `shutdown()`. The dirty-recorder atexit hook must
-    log a RuntimeWarning-shaped message warning about the daemon-thread
-    teardown hazard.
+    surface BOTH a logger warning AND a `RecordedWarning` (via warnings.warn)
+    so that structured-logging deployments and `python -W error::RecordedWarning`
+    test discipline both see it. See `docs/HOW.md::Warnings policy`.
     """
     db = tmp_path / "jobs.db"
     src = textwrap.dedent(
@@ -206,7 +207,12 @@ def test_atexit_warns_when_direct_recorder_started_worker_but_never_shut_down(
     # Subprocess may exit nonzero due to the asyncio teardown race — the
     # warning is what we care about.
     assert "constructed directly but never shut down" in proc.stderr, (
-        f"expected dirty-recorder warning in stderr, got:\n{proc.stderr}"
+        f"expected dirty-recorder log warning in stderr, got:\n{proc.stderr}"
+    )
+    # Belt-and-suspenders: warnings.warn also fires; Python prints the category
+    # name on stderr at interpreter teardown.
+    assert "RecordedWarning" in proc.stderr, (
+        f"expected RecordedWarning category in stderr, got:\n{proc.stderr}"
     )
 
 

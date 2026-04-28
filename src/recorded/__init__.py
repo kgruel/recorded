@@ -27,6 +27,7 @@ from ._errors import (
     JoinedSiblingFailedError,
     JoinTimeoutError,
     RecordedError,
+    RecordedWarning,
     RecorderClosedError,
     SerializationError,
     SyncInLoopError,
@@ -105,4 +106,7 @@ __all__ = [
     "IdempotencyRaceError",
     "JoinedSiblingFailedError",
     "JoinTimeoutError",
+    # Warning category for lifecycle/usage hazards. Filterable via
+    # `warnings.filterwarnings("error", category=recorded.RecordedWarning)`.
+    "RecordedWarning",
 ]

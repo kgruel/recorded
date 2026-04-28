@@ -23,9 +23,11 @@ import inspect
 import json
 import logging
 import threading
+import warnings
 from typing import TYPE_CHECKING
 
 from . import _registry, _storage
+from ._errors import RecordedWarning
 from ._lifecycle import make_error_json
 
 if TYPE_CHECKING:
@@ -229,15 +231,18 @@ class Worker:
         if self._thread is not None:
             self._thread.join(timeout=timeout)
             if self._thread.is_alive():
-                _logger.warning(
-                    "recorded-worker did not drain within %.3fs. In-flight "
-                    "tasks remain on the daemon thread and may be killed at "
-                    "interpreter teardown — successful results in flight are "
-                    "lost (recorded as CancelledError if anything is recorded "
-                    "at all). Increase Worker.shutdown(timeout=) or shorten "
-                    "the wrapped function.",
-                    timeout,
+                msg = (
+                    f"recorded-worker did not drain within {timeout:.3f}s. "
+                    "In-flight tasks remain on the daemon thread and may be "
+                    "killed at interpreter teardown — successful results in "
+                    "flight are lost (recorded as CancelledError if anything "
+                    "is recorded at all). Increase Worker.shutdown(timeout=) "
+                    "or shorten the wrapped function."
                 )
+                _logger.warning("%s", msg)
+                # stacklevel=2: point at Recorder.shutdown() / context-manager
+                # exit, not this internal helper.
+                warnings.warn(msg, RecordedWarning, stacklevel=2)
 
 
 # ----- helpers ----------------------------------------------------------------

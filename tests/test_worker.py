@@ -179,13 +179,18 @@ def test_recorder_shutdown_is_idempotent_and_drains_worker(db_path):
 
 def test_worker_shutdown_warns_when_join_times_out(db_path, caplog, monkeypatch):
     """If the worker thread cannot drain within `timeout`, `Worker.shutdown()`
-    must log a warning rather than returning silently — otherwise a stuck
-    worker is indistinguishable from a clean drain.
+    must surface BOTH a logger warning AND a `RecordedWarning` rather than
+    returning silently — otherwise a stuck worker is indistinguishable from
+    a clean drain. See `docs/HOW.md::Warnings policy` for the dual-channel
+    contract for lifecycle hazards.
 
     Force a stuck worker by monkey-patching `_main` to ignore the shutdown
     event. A test-only `release` Event lets us clean up after the assertion.
     """
+    import warnings as _warnings
+
     import recorded._worker as _worker_mod
+    from recorded import RecordedWarning
 
     release = threading.Event()
 
@@ -201,7 +206,11 @@ def test_worker_shutdown_warns_when_join_times_out(db_path, caplog, monkeypatch)
     try:
         worker = rec._ensure_worker()
         # Worker thread is now spinning in hanging_main.
-        with caplog.at_level("WARNING", logger="recorded"):
+        with (
+            caplog.at_level("WARNING", logger="recorded"),
+            _warnings.catch_warnings(record=True) as caught,
+        ):
+            _warnings.simplefilter("always", RecordedWarning)
             worker.shutdown(timeout=0.05)
 
         warning_messages = [
@@ -210,8 +219,15 @@ def test_worker_shutdown_warns_when_join_times_out(db_path, caplog, monkeypatch)
             if r.levelname == "WARNING" and "recorded-worker did not drain" in r.getMessage()
         ]
         assert warning_messages, (
-            f"expected join-timeout warning, got: {[r.getMessage() for r in caplog.records]}"
+            f"expected join-timeout log warning, got: {[r.getMessage() for r in caplog.records]}"
         )
+
+        recorded_warnings = [w for w in caught if issubclass(w.category, RecordedWarning)]
+        assert recorded_warnings, (
+            f"expected RecordedWarning via warnings.warn, got: "
+            f"{[(w.category.__name__, str(w.message)) for w in caught]}"
+        )
+        assert "did not drain" in str(recorded_warnings[0].message)
     finally:
         # Let the worker thread exit naturally before the test ends.
         release.set()

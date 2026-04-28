@@ -23,13 +23,14 @@ import json
 import logging
 import sqlite3
 import threading
+import warnings
 import weakref
 from collections.abc import Callable, Iterator, Sequence
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from . import _registry, _storage
-from ._errors import ConfigurationError, RecorderClosedError
+from ._errors import ConfigurationError, RecordedWarning, RecorderClosedError
 from ._types import Job, _parse_iso
 
 _logger = logging.getLogger("recorded")
@@ -638,15 +639,17 @@ def _atexit_warn_dirty_recorders() -> None:
     """
     for r in list(_LIVE_RECORDERS):
         if r._worker is not None and not r._closed:
-            _logger.warning(
-                "recorded[%s]: Recorder was constructed directly but never "
+            msg = (
+                f"recorded[{r.path}]: Recorder was constructed directly but never "
                 "shut down before interpreter exit. The daemon worker thread "
                 "is being killed; in-flight results are recorded as "
                 "CancelledError rather than completed. Use `with "
                 "Recorder(...) as r:` (or `recorded.configure(...)` for the "
-                "managed-singleton pattern) so shutdown is guaranteed.",
-                r.path,
+                "managed-singleton pattern) so shutdown is guaranteed."
             )
+            _logger.warning("%s", msg)
+            # stacklevel=1: atexit context has no meaningful caller frame.
+            warnings.warn(msg, RecordedWarning, stacklevel=1)
 
 
 atexit.register(_atexit_warn_dirty_recorders)
