@@ -287,3 +287,77 @@ async def test_query_order_asc_returns_oldest_first(default_recorder):
 
     desc = list(recorded.query(kind="t.query.order", order="desc"))
     assert [j.request for j in desc] == [2, 1, 0]
+
+
+# ----- reserved-kind read filter ----------------------------------------
+
+
+def _seed_reserved_row(
+    rec: Recorder,
+    *,
+    kind: str = "_recorded.leader",
+    key: str | None = None,
+) -> str:
+    """Insert one reserved-kind row directly (bypassing the decorator,
+    which would refuse to register `_recorded.*` as a user kind).
+
+    `key` defaults to a fresh UUID so successive seed calls don't collide
+    on the partial unique index. Pass an explicit `key=` to test
+    same-(kind,key) collision shapes.
+    """
+    job_id = _storage.new_id()
+    now = _storage.now_iso()
+    if key is None:
+        key = f"seed:{job_id[:8]}"
+    rec._insert_running(job_id, kind, key, now, now, None)
+    return job_id
+
+
+def test_query_excludes_reserved_kind_rows_by_default(default_recorder):
+    """`recorded.query()` without a `kind` filter hides `_recorded.*` rows."""
+
+    @recorder(kind="t.read.reserved.user")
+    def user_fn(x):
+        return x
+
+    user_fn(1)
+    _seed_reserved_row(default_recorder)
+
+    rows = list(recorded.query())
+    kinds = [j.kind for j in rows]
+    assert "t.read.reserved.user" in kinds
+    assert all(not k.startswith("_recorded.") for k in kinds)
+
+
+def test_query_includes_reserved_kind_when_explicitly_requested(default_recorder):
+    """`kind="_recorded.*"` opts in to seeing reserved-kind rows."""
+    _seed_reserved_row(default_recorder)
+    _seed_reserved_row(default_recorder)
+
+    rows = list(recorded.query(kind="_recorded.*"))
+    assert len(rows) == 2
+    assert all(j.kind.startswith("_recorded.") for j in rows)
+
+
+def test_last_excludes_reserved_kind_rows_by_default(default_recorder):
+    """`recorded.last()` without a `kind` filter hides `_recorded.*` rows."""
+
+    @recorder(kind="t.read.reserved.last")
+    def user_fn(x):
+        return x
+
+    user_fn(1)
+    _seed_reserved_row(default_recorder)
+
+    rows = recorded.last(10)
+    kinds = [j.kind for j in rows]
+    assert "t.read.reserved.last" in kinds
+    assert all(not k.startswith("_recorded.") for k in kinds)
+
+
+def test_last_includes_reserved_kind_when_explicitly_requested(default_recorder):
+    _seed_reserved_row(default_recorder, kind="_recorded.leader")
+
+    rows = recorded.last(10, kind="_recorded.*")
+    assert len(rows) == 1
+    assert rows[0].kind == "_recorded.leader"

@@ -24,18 +24,26 @@ import recorded
 async def lifespan(app: FastAPI):
     async with recorded.configure(path="/var/lib/app/jobs.db"):
         yield
-    # connection drained, worker stopped on exit
+    # connection closed on exit
 
 app = FastAPI(lifespan=lifespan)
 ```
 
 On enter: connection bootstrapped (which also runs the reaper sweep). On
-exit: worker drained, in-flight tasks finalize, connection closes.
+exit: connection closes.
 
 You can use `configure()` outside a lifespan too — `atexit` handles the
 shutdown then. The lifespan pattern is preferred for production because
-the cleanup runs during graceful shutdown, before the process is forcibly
-killed.
+the cleanup runs during graceful shutdown.
+
+> **`.submit()` requires a leader process.** If your endpoints call
+> `fn.submit(req)` (rather than awaiting `fn(req)` directly inline), run
+> `python -m recorded run --path <jobs.db> --import myapp.tasks` as a
+> sibling process — typically under the same supervisor (systemd unit,
+> Kubernetes Deployment, Docker Compose service). The FastAPI app
+> process inserts pending rows; the leader process executes them. See
+> [workers](workers.md). Without a leader, `.submit()` raises
+> `ConfigurationError` on the first call.
 
 ## Recording outbound calls
 
@@ -178,12 +186,18 @@ validates the shape on the way out.
 ## Background work in handlers
 
 For long-running endpoints, `.submit()` returns control to the client
-immediately and lets a worker do the actual work:
+immediately and lets the leader process do the actual work. **Run the
+leader as a sibling process — the FastAPI app itself does not execute
+submitted jobs.**
 
 ```python
+# myapp/tasks.py — both the app process and the leader process import this
 @recorder(kind="reports.build")
 def build_report(spec): ...
+```
 
+```python
+# Endpoint handlers (run in the FastAPI app process)
 @app.post("/reports")
 def create_report(spec: ReportSpec):
     handle = build_report.submit(spec, key=f"daily-{spec.date}")
@@ -195,6 +209,20 @@ def get_report(job_id: str):
     if job is None:
         raise HTTPException(404)
     return {"status": job.status, "response": job.response}
+```
+
+```bash
+# Leader (separate process, same DB path, same task module imported)
+python -m recorded run --path /var/lib/myapp/jobs.db --import myapp.tasks
+```
+
+```python
+# Optional health endpoint to surface leader presence to your supervisor
+@app.get("/health/leader")
+def leader_health():
+    if not recorded.get_default().is_leader_running():
+        raise HTTPException(503, "no recorded leader running")
+    return {"ok": True}
 ```
 
 See [workers](workers.md) for the full background-execution story.

@@ -8,7 +8,6 @@ context manager wired for FastAPI lifespan.
 
 from __future__ import annotations
 
-import asyncio
 import subprocess
 import sys
 import textwrap
@@ -66,16 +65,23 @@ def test_configure_is_no_op_after_first_call(tmp_path):
 @pytest.mark.asyncio
 async def test_configure_sets_join_timeout_seen_by_handle_wait_default(tmp_path):
     """`JobHandle.wait(timeout=None)` reads `recorder.join_timeout_s` —
-    not the module-constant fallback."""
+    not the module-constant fallback.
+
+    Pins the configured-default propagation by waiting on a row that is
+    never claimed (no leader, no executor). Cheaper and more direct than
+    going through `.submit()` — that path's contract is exercised in
+    `test_handle.py` and `test_cli_run.py`.
+    """
+    from recorded import JobHandle, _storage
+
     db = str(tmp_path / "jobs.db")
     r = recorded.configure(path=db, join_timeout_s=0.2)
     assert r.join_timeout_s == 0.2
 
-    @recorder(kind="t.cfg.never")
-    async def never(x):
-        await asyncio.sleep(60)
+    job_id = _storage.new_id()
+    r._insert_pending(job_id, "t.cfg.never", None, _storage.now_iso(), None)
+    h = JobHandle(job_id, r, "t.cfg.never")
 
-    h = never.submit(1)
     # No explicit timeout → uses the configured per-Recorder default of 0.2s.
     with pytest.raises(JoinTimeoutError) as excinfo:
         await h.wait()
@@ -87,15 +93,16 @@ async def test_configure_join_timeout_does_not_override_explicit_per_call_timeou
     tmp_path,
 ):
     """Per-call `timeout=` always wins over the per-Recorder default."""
+    from recorded import JobHandle, _storage
+
     db = str(tmp_path / "jobs.db")
     r = recorded.configure(path=db, join_timeout_s=60.0)
     assert r.join_timeout_s == 60.0
 
-    @recorder(kind="t.cfg.never2")
-    async def never(x):
-        await asyncio.sleep(60)
+    job_id = _storage.new_id()
+    r._insert_pending(job_id, "t.cfg.never2", None, _storage.now_iso(), None)
+    h = JobHandle(job_id, r, "t.cfg.never2")
 
-    h = never.submit(1)
     # Explicit per-call timeout is 0.2s — the 60s Recorder default must not
     # win, otherwise this test would hang.
     with pytest.raises(JoinTimeoutError) as excinfo:
@@ -109,38 +116,29 @@ async def test_configure_join_timeout_reaches_idempotency_join_helpers(tmp_path)
     `_wait_for_terminal_sync`) read `recorder.join_timeout_s` rather than
     the module constant.
 
-    Verified by holding a `pending` row alive (via worker-blocking sleep),
-    then triggering an in-process keyed call collision: the second call's
-    join helper inherits the configured short timeout and raises.
+    Pre-seeds a `running` row (no executor will terminate it) and
+    triggers a same-key bare-call: it joins via `_async_try_join_existing`
+    and the wait helper inherits the configured short timeout.
     """
-    import threading
+    from recorded import _storage
 
     db = str(tmp_path / "jobs.db")
     r = recorded.configure(path=db, join_timeout_s=0.2)
     assert r.join_timeout_s == 0.2
 
-    started = threading.Event()
-    proceed = threading.Event()
-
     @recorder(kind="t.cfg.idem")
     async def slow(x):
-        started.set()
-        await asyncio.to_thread(proceed.wait, 5.0)
         return {"x": x}
 
-    h = slow.submit(1, key="kk")
-    # Wait until the worker has the row in `running`.
-    assert await asyncio.to_thread(started.wait, 5.0)
+    # Pre-seed a `running` row that the bare call will join. No executor
+    # claims it; the join's wait must respect the configured 0.2s timeout.
+    blocker_id = _storage.new_id()
+    now = _storage.now_iso()
+    r._insert_running(blocker_id, "t.cfg.idem", "kk", now, now, '"x"')
 
-    # Idempotency-collision call: it sees the running row, subscribes,
-    # and waits — but the wait should respect the configured 0.2s default.
     with pytest.raises(JoinTimeoutError) as excinfo:
         await slow(2, key="kk")
     assert excinfo.value.timeout_s == pytest.approx(0.2)
-
-    # Cleanly drain so the worker thread joins fast.
-    proceed.set()
-    await h.wait(timeout=5.0)
 
 
 # --- async context manager -------------------------------------------------
@@ -165,123 +163,14 @@ async def test_recorder_async_context_manager_bootstraps_and_shuts_down(tmp_path
 
 
 # --- atexit lifecycle ------------------------------------------------------
-
-
-def test_atexit_warns_when_direct_recorder_started_worker_but_never_shut_down(
-    tmp_path,
-):
-    """Subprocess: build a Recorder directly, submit (which lazy-starts the
-    worker), exit without `shutdown()`. The dirty-recorder atexit hook must
-    surface BOTH a logger warning AND a `RecordedWarning` (via warnings.warn)
-    so that structured-logging deployments and `python -W error::RecordedWarning`
-    test discipline both see it. See `docs/HOW.md::Warnings policy`.
-    """
-    db = tmp_path / "jobs.db"
-    src = textwrap.dedent(
-        f"""
-        import logging, sys
-        # Surface "recorded" warnings on stderr so the parent test can see them.
-        logging.basicConfig(level=logging.WARNING, stream=sys.stderr,
-                            format="%(name)s %(levelname)s %(message)s")
-        import recorded
-        from recorded._recorder import Recorder
-        import recorded._recorder as _rec
-
-        r = Recorder(path={str(db)!r})
-        _rec._set_default_for_testing(r)
-
-        @recorded.recorder(kind="t.dirty.exit")
-        def fn(x):
-            return {{"x": x}}
-
-        # Submit lazily starts the worker. Don't shutdown; exit dirty.
-        h = fn.submit(1)
-        """
-    )
-    proc = subprocess.run(
-        [sys.executable, "-c", src],
-        capture_output=True,
-        text=True,
-        timeout=10.0,
-    )
-    # Subprocess may exit nonzero due to the asyncio teardown race — the
-    # warning is what we care about.
-    assert "constructed directly but never shut down" in proc.stderr, (
-        f"expected dirty-recorder log warning in stderr, got:\n{proc.stderr}"
-    )
-    # Belt-and-suspenders: warnings.warn also fires; Python prints the category
-    # name on stderr at interpreter teardown.
-    assert "RecordedWarning" in proc.stderr, (
-        f"expected RecordedWarning category in stderr, got:\n{proc.stderr}"
-    )
-
-
-def test_atexit_does_not_warn_when_configure_is_used(tmp_path):
-    """Configured singleton has `atexit.register(shutdown)` registered AFTER
-    the dirty-recorder hook, so atexit-LIFO runs shutdown first. By the time
-    the warning hook runs, `_closed=True` and the warning is suppressed.
-    """
-    db = tmp_path / "jobs.db"
-    src = textwrap.dedent(
-        f"""
-        import logging, sys
-        logging.basicConfig(level=logging.WARNING, stream=sys.stderr,
-                            format="%(name)s %(levelname)s %(message)s")
-        import recorded
-        recorded.configure(path={str(db)!r})
-
-        @recorded.recorder(kind="t.cfg.clean")
-        def fn(x):
-            return {{"x": x}}
-
-        fn.submit(1)
-        """
-    )
-    proc = subprocess.run(
-        [sys.executable, "-c", src],
-        capture_output=True,
-        text=True,
-        timeout=10.0,
-    )
-    assert proc.returncode == 0, proc.stderr
-    assert "never shut down" not in proc.stderr, (
-        f"configure() singleton should not trigger dirty warning:\n{proc.stderr}"
-    )
-
-
-def test_atexit_does_not_warn_when_with_block_used(tmp_path):
-    """`with Recorder(...) as r:` calls shutdown via __exit__ before the
-    interpreter exit hook runs — no warning."""
-    db = tmp_path / "jobs.db"
-    src = textwrap.dedent(
-        f"""
-        import logging, sys
-        logging.basicConfig(level=logging.WARNING, stream=sys.stderr,
-                            format="%(name)s %(levelname)s %(message)s")
-        import recorded
-        from recorded import Recorder
-        import recorded._recorder as _rec
-
-        with Recorder(path={str(db)!r}) as r:
-            _rec._set_default_for_testing(r)
-
-            @recorded.recorder(kind="t.with.clean")
-            def fn(x):
-                return {{"x": x}}
-
-            fn.submit(1)
-            # __exit__ on context manager calls shutdown before the atexit hook.
-        """
-    )
-    proc = subprocess.run(
-        [sys.executable, "-c", src],
-        capture_output=True,
-        text=True,
-        timeout=10.0,
-    )
-    assert "never shut down" not in proc.stderr, (
-        f"`with Recorder(...)` should not trigger dirty warning:\n{proc.stderr}"
-    )
+#
+# The dirty-recorder atexit warning machinery (`_LIVE_RECORDERS` +
+# `_atexit_warn_dirty_recorders`) was introduced to surface the H-01
+# hazard: `Recorder()` directly constructed, `.submit()` lazy-started a
+# daemon worker, interpreter exited before `shutdown()`. Once the worker
+# is gone (PLAN.md step 6), there is no daemon thread to leak — the hazard
+# is structurally impossible — and the warning machinery goes with it.
+# Tests pinning that warning have been removed.
 
 
 def test_atexit_runs_shutdown_on_configured_default_only(tmp_path):

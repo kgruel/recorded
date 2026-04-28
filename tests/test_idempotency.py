@@ -262,41 +262,17 @@ async def test_typed_instance_join_preserves_type_in_process(default_recorder, m
 
 
 # --- live-result cache hygiene (regression tests for the leak fix) ----------
-
-
-@pytest.mark.asyncio
-async def test_unkeyed_submit_never_populates_live_result_cache(default_recorder):
-    """Non-keyed `.submit()` has no possible idempotency joiner — there is
-    no cache entry to ever consume. Skipping the stash on key=None paths
-    means heavy `.submit()` traffic without keys produces zero cache growth.
-    """
-
-    @recorder(kind="t.live.unkeyed")
-    async def fn(x):
-        return {"x": x}
-
-    h = fn.submit(7)
-    job = await h.wait(timeout=5.0)
-    assert job.response == {"x": 7}
-    # Cache empty for this job — never stashed.
-    assert h.job_id not in default_recorder._live_results
-
-
-@pytest.mark.asyncio
-async def test_keyed_submit_with_no_joiner_drains_cache_after_wait(default_recorder):
-    """Keyed `.submit().wait()` with no sibling joiner: stash happens (key
-    is not None), no joiner subscribes via `_response_for`, but the wait
-    drain in `JobHandle.wait()` clears the cache so it does not leak per-job."""
-
-    @recorder(kind="t.live.keyed_no_joiner")
-    async def fn(x):
-        return {"x": x}
-
-    h = fn.submit(3, key="kk-no-joiner")
-    job = await h.wait(timeout=5.0)
-    assert job.response == {"x": 3}
-    # Cache drained.
-    assert h.job_id not in default_recorder._live_results
+#
+# `_live_results` is a per-recorder in-process stash populated by
+# `_run_and_record_async` immediately before the terminal write, so
+# *same-process* idempotency joiners receive the leader's typed object
+# rather than the storage-rehydrated dict.
+#
+# Under cross-process leadership the leader's stash lives in the *leader*
+# process — the submitting process never populates its own
+# `_live_results`. The .submit()-based variants of these tests pinned an
+# in-process invariant that no longer applies; the bare-call variant
+# below stays — that path still uses the in-process stash.
 
 
 def test_keyed_bare_call_no_joiner_clears_cache_on_resolve(default_recorder):
@@ -324,13 +300,19 @@ def test_keyed_bare_call_no_joiner_clears_cache_on_resolve(default_recorder):
 
 
 def test_submit_raises_idempotency_race_when_post_insert_lookup_returns_none(
-    default_recorder, monkeypatch
+    leader_recorder, monkeypatch
 ):
-    """`.submit(key=K)` site (`_decorator._submit`)."""
+    """`.submit(key=K)` site (`_decorator._submit`).
+
+    Uses `leader_recorder` so `.submit()` passes the leader-presence gate
+    (step 5). The leader subprocess won't claim the seeded row because
+    its kind isn't registered in the leader process — but the test
+    raises `IdempotencyRaceError` at `.submit()` time, before any wait.
+    """
     from recorded import _storage as _storage_mod
     from recorded._errors import IdempotencyRaceError
 
-    rec = default_recorder
+    rec = leader_recorder
 
     @recorder(kind="t.race.submit")
     def fn(x):

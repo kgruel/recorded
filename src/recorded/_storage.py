@@ -13,6 +13,30 @@ STATUS_COMPLETED = "completed"
 STATUS_FAILED = "failed"
 TERMINAL_STATUSES = (STATUS_COMPLETED, STATUS_FAILED)
 
+# Reserved kind prefix for library-internal rows (currently: leader heartbeat
+# rows under `_recorded.leader`). User-decorated kinds can't start with this
+# prefix (rejected at decoration time); the read API
+# (`Recorder.query`/`last`) excludes them by default unless the caller asks
+# for them explicitly via `kind="_recorded.*"`.
+RESERVED_KIND_PREFIX = "_recorded."
+RESERVED_KIND_GLOB = "_recorded.*"
+
+# Leader-heartbeat row kind. The leader process (`python -m recorded run`)
+# inserts one row of this kind on startup (key=`host:pid`) and updates its
+# `started_at` periodically as a liveness signal. `Recorder.is_leader_running`
+# checks for any fresh row of this kind; `.submit()` gates on that.
+#
+# `started_at` doubles as the staleness clock — see WHY.md::Lifecycle (the
+# `_recorded.leader` heartbeat exception). The reaper handles dead-leader
+# cleanup automatically via the existing `running` + stale `started_at`
+# sweep.
+LEADER_KIND = "_recorded.leader"
+
+# Default cadences. Per-Recorder overrides via `Recorder(leader_heartbeat_s=,
+# leader_stale_s=)` for tests that need tight cycles.
+DEFAULT_LEADER_HEARTBEAT_S = 5.0
+DEFAULT_LEADER_STALE_S = 30.0  # 6× heartbeat → 5 missed beats of grace
+
 SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS jobs (
   id              TEXT PRIMARY KEY,

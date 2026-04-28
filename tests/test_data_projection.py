@@ -17,7 +17,6 @@ import pytest
 
 from recorded import Recorder, recorder
 from recorded import _recorder as _recorder_mod
-from recorded._handle import JobHandle
 
 pydantic = pytest.importorskip("pydantic")
 from pydantic import BaseModel  # noqa: E402
@@ -344,20 +343,6 @@ def test_attach_and_projection_both_populate_last_write_wins(default_recorder, d
     assert warnings == []
 
 
-def test_drift_via_submit_path(recorder_for_submit, drift_caplog):
-    """Worker-driven path (.submit) produces identical drift warning behavior."""
-
-    @recorder(kind="t.drift.submit", data=OrderViewPyd)
-    def fn(req):
-        return 42
-
-    handle: JobHandle = fn.submit({})
-    handle.wait_sync(timeout=5.0)
-
-    warnings = [r for r in _drift_warnings(drift_caplog) if "t.drift.submit" in r.getMessage()]
-    assert len(warnings) == 1
-
-
 def test_per_recorder_dedup_no_cross_contamination(db_path, drift_caplog):
     """Two separate Recorders with the same kind both warn independently."""
 
@@ -416,19 +401,4 @@ def test_configure_warn_on_data_drift_forwarded(monkeypatch, db_path, drift_capl
         assert warnings == []
     finally:
         monkeypatch.setattr(_recorder_mod, "_default", None)
-        r.shutdown()
-
-
-# --- fixture for submit path ----------------------------------------------
-
-
-@pytest.fixture
-def recorder_for_submit(db_path):
-    """A Recorder installed as default that supports .submit() (worker path)."""
-    r = Recorder(path=db_path)
-    _recorder_mod._set_default_for_testing(r)
-    try:
-        yield r
-    finally:
-        _recorder_mod._set_default_for_testing(None)
         r.shutdown()

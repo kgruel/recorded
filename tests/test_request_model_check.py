@@ -78,13 +78,20 @@ def test_submit_with_kwargs_raises_configuration_error(default_recorder):
         fn.submit("hello", extra="x")
 
 
-def test_submit_with_single_positional_arg_still_works(default_recorder):
-    """Single-positional-arg `.submit()` is the supported shape."""
+def test_submit_with_single_positional_arg_still_works(leader_recorder):
+    """Single-positional-arg `.submit()` is the supported shape.
 
-    @recorder(kind="t.submit.single_ok")
-    def fn(x):
-        return {"x": x}
+    Uses `_leader_kinds.echo` so the leader subprocess can execute it —
+    closure-defined kinds aren't visible cross-process.
+    """
+    import sys
 
-    handle = fn.submit(99)
+    sys.path.insert(0, __file__.rsplit("/", 1)[0])
+    try:
+        import _leader_kinds
+    finally:
+        sys.path.pop(0)
+
+    handle = _leader_kinds.echo.submit(99)
     job = handle.wait_sync(timeout=5.0)
-    assert job.response == {"x": 99}
+    assert job.response == {"echoed": 99}

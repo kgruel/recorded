@@ -94,11 +94,15 @@ Escape hatch — a raw `sqlite3.Connection` for arbitrary SQL. See
 python -m recorded last [N] [--kind GLOB] [--status S] [--path P]
 python -m recorded get  <job_id> [--prompt] [--path P]
 python -m recorded tail [--kind GLOB] [--interval S] [--path P]
+python -m recorded run  [--path P] [--import MOD ...] [--shutdown-timeout S]
 ```
 
 Stdlib only. Each invocation builds its own short-lived `Recorder(path=...)`
-and shuts it down — never touches the module-level singleton, so the CLI
-won't spawn a worker thread.
+and shuts it down — never touches the module-level singleton.
+
+`run` is the leader process required for `.submit()`; the read-side
+subcommands (`last`/`get`/`tail`) hide `_recorded.*` heartbeat rows by
+default. See [workers](workers.md).
 
 `--path` defaults to `./jobs.db`. Override per invocation when your
 application uses a non-default location.

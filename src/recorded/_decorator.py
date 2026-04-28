@@ -26,6 +26,7 @@ from typing import Any, Protocol, cast, overload
 from . import _registry, _storage
 from ._adapter import make_adapter
 from ._errors import (
+    ConfigurationError,
     IdempotencyRaceError,
     JoinedSiblingFailedError,
     SyncInLoopError,
@@ -98,6 +99,14 @@ def recorder(
     def decorate(fn: Callable[..., Any]) -> _RecordedCallable:
         auto_kind = kind is None
         actual_kind = kind or f"{fn.__module__}.{fn.__qualname__}"  # type: ignore
+
+        if actual_kind.startswith(_storage.RESERVED_KIND_PREFIX):
+            raise ConfigurationError(
+                f"kind={actual_kind!r} uses the reserved prefix "
+                f"{_storage.RESERVED_KIND_PREFIX!r}. Pick a different kind; "
+                "this prefix is reserved for library-internal rows "
+                "(e.g. leader heartbeats)."
+            )
 
         entry = _registry.RegistryEntry(
             kind=actual_kind,
@@ -270,9 +279,9 @@ def _attach_call_modes(
         wrapper.async_run = _async_run
 
     # `.submit(req, key=None, retry_failed=True)` — INSERT pending and return
-    # a JobHandle. Worker (lazy-started on the Recorder) picks up the row.
-    # Idempotency-collision: if `key` is already active, return a handle
-    # bound to the existing row.
+    # a JobHandle. The leader process (`python -m recorded run`) claims and
+    # executes the row; .submit() raises ConfigurationError if no leader
+    # heartbeat is fresh.
     def _submit(
         *args: Any,
         key: str | None = None,
@@ -284,10 +293,23 @@ def _attach_call_modes(
         _validate_call_args(entry, key, args, kwargs, submit=True)
         recorder_inst = get_default()
 
+        # Leader-presence gate: .submit() requires a cross-process leader.
+        # Bare-call paths (sync_wrapper / async_wrapper) do NOT call this
+        # check — Tier 1 stays free of leader-detection cost. Validation
+        # already passed above; check the operational precondition next.
+        if not recorder_inst._is_leader_running():
+            raise ConfigurationError(
+                f"{entry.kind!r}.submit() requires a running leader process. "
+                f"Start one with `python -m recorded run --path {recorder_inst.path!r} "
+                "--import <module>` (where <module> is the package whose "
+                "@recorder decorations include this kind), or call the function "
+                "bare (without .submit()) for in-process execution. "
+                "Probe via `recorder.is_leader_running()` for health checks."
+            )
+
         if key is not None:
             existing = _try_join_handle(recorder_inst, entry, key, retry_failed)
             if existing is not None:
-                recorder_inst._ensure_worker()
                 return existing
 
         captured_request = _capture_request(args, kwargs)
@@ -301,10 +323,8 @@ def _attach_call_modes(
             existing = _try_join_handle(recorder_inst, entry, key, retry_failed)
             if existing is None:
                 raise IdempotencyRaceError(kind=entry.kind, key=key) from None
-            recorder_inst._ensure_worker()
             return existing
 
-        recorder_inst._ensure_worker()
         return JobHandle(job_id, recorder_inst, entry.kind)
 
     wrapper.submit = _submit

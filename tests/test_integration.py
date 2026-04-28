@@ -581,20 +581,25 @@ async def test_sync_from_inside_event_loop_raises(default_recorder, httpserver):
         place.sync({"qty": 1})
 
 
-# --- 13. .submit() returns a JobHandle (Stream A.2 worker is wired) -------
+# --- 13. .submit() returns a JobHandle (cross-process leader path) --------
 
 
-def test_submit_returns_job_handle_resolving_to_terminal_job(default_recorder):
-    """Phase 2 Stream A wired `.submit()` through the worker. Each
-    submit returns a JobHandle whose `wait_sync()` resolves to a Job."""
+def test_submit_returns_job_handle_resolving_to_terminal_job(leader_recorder):
+    """End-to-end: `.submit()` returns a JobHandle whose `wait_sync()`
+    resolves to a `completed` Job after the leader subprocess executes it.
+    """
+    import sys
+
     from recorded import JobHandle
 
-    @recorder(kind="ext.broker.submit_real")
-    def fn(x):
-        return {"echo": x}
+    sys.path.insert(0, __file__.rsplit("/", 1)[0])
+    try:
+        import _leader_kinds
+    finally:
+        sys.path.pop(0)
 
-    handle = fn.submit(42)
+    handle = _leader_kinds.echo.submit(42)
     assert isinstance(handle, JobHandle)
     job = handle.wait_sync(timeout=5.0)
     assert job.status == "completed"
-    assert job.response == {"echo": 42}
+    assert job.response == {"echoed": 42}

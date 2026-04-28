@@ -37,13 +37,18 @@ Every feature falls into one of three tiers, ordered by cost:
    `key=` for idempotency on bare-call, `attach()`, `attach_error()`.
    Removable along with `@recorder` without rewriting call sites.
    Cost = one SQLite write.
-2. **Inspection.** `recorded.last`/`get`/`list`/`connection`, the CLI.
+2. **Inspection.** `recorded.last`/`get`/`query`/`connection`, the CLI.
    Names the library, but no infrastructure cost.
-3. **Advanced.** `.submit()`, `JobHandle.wait()`, anything cross-
-   process. Worker thread + asyncio loop light up here.
+3. **Cross-process.** `.submit()`, `JobHandle.wait()`. Requires a
+   leader process (`python -m recorded run`) running against the same
+   `jobs.db` — durable cross-process handoff is what this tier *is*.
 
-A script that only ever uses Tier 1 has zero background threads. The
-library never imposes itself.
+A script that only ever uses Tier 1 has zero background threads, no
+leader-detection cost, and no operational dependencies — the library
+never imposes itself. Tier 3 is opt-in infrastructure: `.submit()`
+raises `ConfigurationError` if no leader heartbeat is fresh, so a
+misconfigured deployment fails loudly on its first submit rather than
+degrading silently.
 
 This tier model gives every proposal a falsifiable place to land: Tier
 1 features must be wrap-transparent; Tier 3 can be loud. A proposal
@@ -122,7 +127,7 @@ directly as running" optimization). At broker-API scale that's <1%,
 and the consistency was judged worth it.
 
 > **Superseded — bare and submitted now diverge.** A code review
-> surfaced a structural bug: the worker could claim and double-execute
+> surfaced a structural bug: the leader could claim and double-execute
 > bare-call rows. The "consistency in mental model" argument was
 > outweighed by the bug class it admitted. Current shape:
 >
@@ -130,10 +135,23 @@ and the consistency was judged worth it.
 > - **Submitted**: `INSERT pending → UPDATE running` (atomic claim) `→
 >   UPDATE terminal`. Three writes.
 >
-> `pending` exclusively means "queued for the worker." `_mark_running`
-> no longer exists. The worker can never see a bare-call row, so the
+> `pending` exclusively means "queued for the leader." `_mark_running`
+> no longer exists. The leader can never see a bare-call row, so the
 > double-claim race is structurally impossible. Trace details in
 > [HOW.md → the lifecycle](HOW.md#the-lifecycle).
+
+> **Heartbeat-row exception.** The leader process inserts one
+> `_recorded.leader` row keyed by `host:pid` and updates its
+> `started_at` periodically as a liveness signal. That row stays
+> `running` indefinitely while its `started_at` is refreshed; it never
+> reaches a terminal status under normal operation. The reaper handles
+> dead-leader cleanup automatically — a stale `running` row with old
+> `started_at` gets flipped to `failed` on the next bootstrap, and
+> `is_leader_running()` then sees no fresh row. Reusing `started_at`
+> as the staleness clock was a deliberate choice on dissolution
+> grounds: a separate `heartbeat_at` column was considered and
+> rejected because the reaper already does the right thing for stale
+> `running` rows. See [Worker → the leader](#worker-the-leader).
 
 ## Wrap-transparency
 
@@ -254,17 +272,62 @@ waiter function; the per-iteration `NOTIFY_POLL_INTERVAL_S` (200 ms)
 timeout doubles as the polling cadence. Mechanics in
 [HOW.md → the wait primitive](HOW.md#the-wait-primitive--one-mechanism-four-surfaces).
 
-## Worker
+## Worker — the leader
 
-**Lazy-started, single asyncio loop in a dedicated thread.** No
-worker spawns until the first `.submit()` call on any decorated
-function. A script that only ever uses bare calls runs without any
-background thread.
+**`.submit()` is a cross-process tier. The leader is required
+infrastructure, not opportunistic.** A separate process running
+`python -m recorded run` claims pending rows and executes them; in-
+process `.submit()` raises `ConfigurationError` if no leader heartbeat
+is fresh.
 
-Concurrency by task spawning, not pool sizing — `asyncio.create_task`
-gives many in-flight tasks on one loop without thread-pool tuning.
-SQLite I/O via `asyncio.to_thread` keeps the loop spinning during
-disk writes; no `aiosqlite` dependency.
+> **Reshaped — dissolved the in-process worker.** The original
+> implementation lazy-started an asyncio-loop-on-a-daemon-thread Worker
+> on first `.submit()`. That worker introduced a class of shutdown
+> hazards: a daemon thread killed at interpreter teardown converted
+> in-flight successes into `CancelledError` rows; `Recorder.shutdown()`
+> drained it bounded by a join timeout that was silent on miss. The
+> hazards were patched defensively via `_LIVE_RECORDERS` + an atexit
+> warning hook; structural elimination required dissolving the worker
+> entirely. The dissolution test fired: the worker's job (claim →
+> run → record) is identical to what a leader process does, so the
+> in-process worker dissolves into the leader. Capability progression
+> stays honest — `.submit()` *means* "you have a leader running."
+> `_worker.py`, `_LIVE_RECORDERS`, `_atexit_warn_dirty_recorders`, the
+> `_ensure_worker` lazy-start machinery: all gone. `Recorder.shutdown()`
+> simplifies to "mark closed, close conn." See HANDOFF.md Decision
+> Queue #2.
+
+The leader process is a tight asyncio loop:
+
+1. `_claim_leader_slot(host:pid)` inserts a `_recorded.leader` row.
+2. Heartbeat task refreshes `started_at` every `leader_heartbeat_s`.
+3. Main loop: `await rec._claim_one()`; on hit, spawn a task that runs
+   `_run_and_record_async` for the row.
+4. SIGTERM/SIGINT: drain in-flight tasks (bounded by
+   `--shutdown-timeout`), DELETE the heartbeat row, exit 0.
+
+The same SQL primitives that the in-process worker used (`CLAIM_ONE`,
+`UPDATE_COMPLETED`, `UPDATE_FAILED`, the wait primitive) carry over —
+the leader is just a different host for the same machinery. The wait
+primitive's cross-process polling fallback (200 ms cadence) was
+already shipped behavior; it's now the only path under `.submit()`.
+
+### Why a heartbeat row, not a separate `leaders` table or PID file
+
+A heartbeat row uses primitives that already exist: the `jobs` table,
+the status machine, the partial unique index on `(kind, key)`, the
+reaper. A reserved-kind prefix (`_recorded.*`) is convention, not DDL,
+so no schema change. The reaper handles dead-leader cleanup
+automatically — a stale `running` heartbeat with old `started_at`
+gets reaped on the next bootstrap. PID files would have added a
+filesystem dependency the library otherwise doesn't have; a separate
+table would have added a migration boundary for one internal use
+case. Both fail the dissolution test.
+
+`is_leader_running()` is one SELECT against the heartbeat row:
+`SELECT 1 FROM jobs WHERE kind='_recorded.leader' AND status='running'
+AND started_at >= now() - leader_stale_s`. Cheap and exposed publicly
+for deployment health checks.
 
 ### Cross-mode shims (`.sync`, `.async_run`)
 
@@ -278,18 +341,17 @@ so `attach()` works.
 `.sync()` from inside a running event loop raises `SyncInLoopError`
 rather than deadlocking on `asyncio.run`-under-loop.
 
-### BYO worker — deferred
+### BYO leader
 
-The original design exposed a `WorkerContract` interface for Celery /
-k8s-cron / custom-script workers to drive jobs. **Deferred until a
-second worker implementation actually exists.** Hard-coding a contract
-before the second use case lands would be Chekhov's gun.
-
-Driving jobs from outside the default worker today means using
-`recorded.connection()` and the `_storage` SQL constants
-(`CLAIM_ONE`, `INSERT_PENDING`, `UPDATE_COMPLETED`, `UPDATE_FAILED`)
-directly. Promote to a real contract once a real second
-implementation lands.
+The leader implementation lives in `_cli.py::cmd_run` + the in-`Recorder`
+heartbeat helpers. Custom workers (Celery / k8s-cron / bespoke scripts)
+that want to drive jobs against `jobs.db` can do so by calling
+`Recorder._claim_one()` plus the `_storage` SQL constants
+(`INSERT_PENDING`, `UPDATE_COMPLETED`, `UPDATE_FAILED`) directly, and
+maintaining their own heartbeat row via `_claim_leader_slot` /
+`_touch_leader_heartbeat` so `is_leader_running()` reports correctly
+to submitters. There's no `WorkerContract` interface — the second
+implementation hasn't shown up yet.
 
 ## Recorder dispatch
 
@@ -402,9 +464,15 @@ The features that didn't earn their keep, and why each was cut.
 - **MCP server in core.** The read API + `Job.to_prompt()` makes this
   a thin wrapper anyone can build elsewhere. We make it cheap to
   ship, rather than bundling it.
-- **`WorkerContract` for BYO workers.** See [Worker → BYO
-  deferred](#byo-worker--deferred). Wait for a second worker
-  implementation to actually exist.
+- **`WorkerContract` for BYO workers.** No interface needed — the
+  leader is just a tight asyncio loop on `_claim_one()` plus a
+  heartbeat row. See [Worker — the leader → BYO leader](#byo-leader)
+  for how to drive jobs from a custom executor without `cmd_run`.
+- **In-process `Worker`.** Lazy-started asyncio-loop-on-a-daemon-thread
+  that ran `.submit()` jobs in the submitting process. Dissolved in
+  the worker-dissolution change — see [Worker — the leader](#worker--the-leader).
+  The hazards it introduced (CancelledError-on-teardown, silent join
+  timeout, the `_LIVE_RECORDERS` atexit warning) all dissolved with it.
 - **`AttachOutsideJobError`.** Originally raised when `attach()` was
   called outside a recorded context; removed in favor of silent
   no-op. Wrap-transparency requires it.

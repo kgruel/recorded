@@ -1,105 +1,106 @@
 """`JobHandle` contract: idempotency-collision behavior and the
-wrap-transparency rule for `.wait()` failure paths."""
+wrap-transparency rule for `.wait()` failure paths.
+
+Tests that exercise `.submit()` end-to-end use the `leader_recorder`
+fixture (which spawns a `python -m recorded run` subprocess) and
+canonical kinds from `tests/_leader_kinds.py`. Tests that manipulate
+rows directly (timeout, RowDisappeared, no .submit()) use
+`default_recorder` — they don't need a leader.
+"""
 
 from __future__ import annotations
 
 import asyncio
+import sys
 
 import pytest
 
-from recorded import JobHandle, recorder
+from recorded import JobHandle, _storage
 from recorded._errors import (
     JoinedSiblingFailedError,
     JoinTimeoutError,
     RowDisappearedError,
 )
 
+# `_leader_kinds` is loaded by the `leader_recorder` fixture (which adds
+# `tests/` to sys.path). Resolve it here for tests that use the fixture so
+# the import is visible at decoration-time.
+sys.path.insert(0, __file__.rsplit("/", 1)[0])
+import _leader_kinds  # noqa: E402, PLC0415
+
+sys.path.pop(0)
+
 
 @pytest.mark.asyncio
 async def test_submit_idempotency_collision_returns_handle_to_existing_active_row(
-    default_recorder,
+    leader_recorder,
 ):
     """Named test: `submit(key='x')` twice while pending → both handles
     resolve to the same `Job`.
 
-    Synchronization uses `threading.Event` because the worker runs on a
-    dedicated thread + event loop separate from the test's loop —
-    `asyncio.Event` is bound to a single loop and would not signal
-    across them.
+    Cross-process leader: in-process events can't synchronize with the
+    leader subprocess. Use a slow function (sleeps in the leader) so the
+    second `.submit()` lands while the first row is still pending or
+    running. `runs == 1` is asserted post-hoc by counting actual rows
+    with the keyed lookup.
     """
-    import threading
-
-    started = threading.Event()
-    proceed = threading.Event()
-    runs = 0
-
-    @recorder(kind="t.handle.idem")
-    async def slow(x):
-        nonlocal runs
-        runs += 1
-        started.set()
-        # Wait on a thread primitive from the worker's coroutine.
-        await asyncio.to_thread(proceed.wait)
-        return {"x": x, "runs": runs}
-
-    h1 = slow.submit(1, key="kk")
-    # Wait until the worker has picked it up so the second submit collides
-    # while the row is `pending`-or-`running`.
-    await asyncio.to_thread(started.wait, 5.0)
-    assert started.is_set()
-
-    h2 = slow.submit(2, key="kk")
+    h1 = _leader_kinds.slow_echo.submit({"sleep": 0.5, "value": 1}, key="kk-collision")
+    # No event-based synchronization across the process boundary —
+    # immediately submit again with the same key. The pre-INSERT
+    # idempotency lookup (or the IntegrityError fallback) folds h2 into
+    # the same row as h1.
+    h2 = _leader_kinds.slow_echo.submit({"sleep": 0.5, "value": 2}, key="kk-collision")
 
     # Both handles point at the same row.
     assert h1.job_id == h2.job_id
 
-    proceed.set()
     job1 = await h1.wait(timeout=5.0)
     job2 = await h2.wait(timeout=5.0)
     assert job1.id == job2.id
     assert job1.response == job2.response
-    assert runs == 1
+
+    # Exactly one row exists for that key — proof that idempotency held.
+    rec = leader_recorder
+    rows = rec._fetchall(
+        "SELECT id FROM jobs WHERE kind=? AND key=?",
+        ("t.leader.slow_echo", "kk-collision"),
+    )
+    assert len(rows) == 1
 
 
 @pytest.mark.asyncio
 async def test_submit_idempotency_collision_with_retry_failed_false_raises_on_wait(
-    default_recorder,
+    leader_recorder,
 ):
     """Named test: failed row + `retry_failed=False` + `submit().wait()`
     → raises `JoinedSiblingFailedError` (per wrap-transparency: keyed
     calls never return a `Job` for failure paths)."""
-
-    @recorder(kind="t.handle.no_retry")
-    async def flaky(x):
-        raise ValueError("boom")
-
     # First submission fails. `.wait()` always raises on failure (per
     # wrap-transparency); the wrapped function's exception is captured in
     # `sibling_error`, not re-raised verbatim from the handle.
-    h1 = flaky.submit(1, key="kk")
+    h1 = _leader_kinds.fails.submit("first", key="kk-no-retry")
     with pytest.raises(JoinedSiblingFailedError) as excinfo_first:
         await h1.wait(timeout=5.0)
     assert excinfo_first.value.sibling_error == {
-        "type": "ValueError",
-        "message": "boom",
+        "type": "RuntimeError",
+        "message": "intentional failure: 'first'",
     }
 
     # Second submission with retry_failed=False resolves to the prior
     # failed row's handle. wait() raises rather than returning the Job.
-    h2 = flaky.submit(2, key="kk", retry_failed=False)
+    h2 = _leader_kinds.fails.submit("second", key="kk-no-retry", retry_failed=False)
     assert isinstance(h2, JobHandle)
     with pytest.raises(JoinedSiblingFailedError) as excinfo:
         await h2.wait(timeout=5.0)
     assert excinfo.value.sibling_error == {
-        "type": "ValueError",
-        "message": "boom",
+        "type": "RuntimeError",
+        "message": "intentional failure: 'first'",
     }
 
 
 @pytest.mark.asyncio
 async def test_handle_wait_timeout_raises_join_timeout(default_recorder):
     """A handle whose row never reaches terminal raises `JoinTimeoutError`."""
-    from recorded import _storage
 
     rec = default_recorder
     # Insert a pending row directly — no worker will ever execute it
@@ -118,7 +119,6 @@ async def test_handle_wait_raises_row_disappeared_when_row_deleted(default_recor
     """A waiter parked on a row that gets deleted out from under it must
     fail-fast with `RowDisappearedError` rather than wait until
     `JoinTimeoutError` (default 30 s) elapses."""
-    from recorded import _storage
 
     rec = default_recorder
     job_id = _storage.new_id()
@@ -160,8 +160,6 @@ def test_handle_wait_sync_raises_row_disappeared_when_row_deleted(default_record
     """Sync variant of the disappear-fail-fast contract."""
     import threading
 
-    from recorded import _storage
-
     rec = default_recorder
     job_id = _storage.new_id()
     rec._insert_pending(job_id, "t.handle.disappear_sync", None, _storage.now_iso(), None)
@@ -191,30 +189,20 @@ def test_handle_wait_sync_raises_row_disappeared_when_row_deleted(default_record
         t.join(timeout=2.0)
 
 
-def test_handle_wait_sync_returns_terminal_job(default_recorder):
+def test_handle_wait_sync_returns_terminal_job(leader_recorder):
     """`wait_sync()` blocks the calling thread, returns Job on success."""
-
-    @recorder(kind="t.handle.sync_wait")
-    def fn(x):
-        return {"x": x}
-
-    h = fn.submit(3)
+    h = _leader_kinds.echo.submit(3)
     job = h.wait_sync(timeout=5.0)
     assert job.status == "completed"
-    assert job.response == {"x": 3}
+    assert job.response == {"echoed": 3}
 
 
-def test_handle_wait_sync_failure_raises_joined_sibling_failed(default_recorder):
+def test_handle_wait_sync_failure_raises_joined_sibling_failed(leader_recorder):
     """`wait_sync()` raises `JoinedSiblingFailedError` for failed terminal."""
-
-    @recorder(kind="t.handle.sync_fail")
-    def fn(x):
-        raise RuntimeError("nope")
-
-    h = fn.submit(1)
+    h = _leader_kinds.fails.submit("x", key="kk-sync-fail")
     with pytest.raises(JoinedSiblingFailedError) as excinfo:
         h.wait_sync(timeout=5.0)
     assert excinfo.value.sibling_error == {
         "type": "RuntimeError",
-        "message": "nope",
+        "message": "intentional failure: 'x'",
     }

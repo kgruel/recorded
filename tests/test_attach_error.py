@@ -136,16 +136,24 @@ def test_error_model_serialization_failure_falls_back_to_type_message(
 
 
 @pytest.mark.asyncio
-async def test_attach_error_works_through_worker_loop(default_recorder):
-    """`JobHandle` path: a worker-executed function calls `attach_error()`,
-    raises; the row's `error_json` matches the model."""
+async def test_attach_error_works_through_leader_loop(leader_recorder):
+    """`JobHandle` path: a leader-executed function calls `attach_error()`,
+    raises; the row's `error_json` matches the registered `error=Model`.
 
-    @recorder(kind="t.err.worker", error=BrokerError)
-    async def fn(req):
-        attach_error(BrokerError(code="W", message="worker-side", correlation_id="cw"))
-        raise RuntimeError("worker boom")
+    Uses `_leader_kinds.attach_error_demo` (and `LeaderError`) so the kind
+    is registered in the leader subprocess.
+    """
+    import sys
 
-    h = fn.submit({"x": 1})
+    sys.path.insert(0, __file__.rsplit("/", 1)[0])
+    try:
+        import _leader_kinds
+    finally:
+        sys.path.pop(0)
+
+    h = _leader_kinds.attach_error_demo.submit(
+        {"code": "W", "message": "leader-side", "correlation_id": "cw"}
+    )
     from recorded._errors import JoinedSiblingFailedError
 
     with pytest.raises(JoinedSiblingFailedError) as excinfo:
@@ -155,11 +163,11 @@ async def test_attach_error_works_through_worker_loop(default_recorder):
     # model, by design).
     assert excinfo.value.sibling_error == {
         "code": "W",
-        "message": "worker-side",
+        "message": "leader-side",
         "correlation_id": "cw",
     }
-    job = default_recorder.get(h.job_id)
-    assert isinstance(job.error, BrokerError)
+    job = leader_recorder.get(h.job_id)
+    assert isinstance(job.error, _leader_kinds.LeaderError)
     assert job.error.code == "W"
 
 

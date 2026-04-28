@@ -76,7 +76,7 @@ The partial index does the load-bearing work for idempotency. Multiple
 ## The lifecycle
 
 Bare and submitted calls diverge: `pending` exclusively means
-"queued for the worker." Bare-call rows skip `pending` entirely and
+"queued for the leader." Bare-call rows skip `pending` entirely and
 insert directly as `running`. The rationale — and the bug class this
 structurally eliminates — lives in [WHY.md](WHY.md) under the lifecycle
 decisions.
@@ -84,14 +84,14 @@ decisions.
 ```
 bare:        INSERT running                         →  UPDATE {completed|failed}
 submitted:   INSERT pending  →  UPDATE running      →  UPDATE {completed|failed}
-                                (atomic claim by worker)
+                                (atomic claim by leader)
 ```
 
 The bare call inserts a row directly as `running` with `started_at`
 populated in the same statement (`INSERT_RUNNING`). The submitted path
-inserts as `pending` and the worker's `CLAIM_ONE` does the atomic
-`pending → running` transition. The worker can never see a bare-call
-row, which is what makes the worker-double-claiming-bare-call-row class
+inserts as `pending`; the leader process's `CLAIM_ONE` does the atomic
+`pending → running` transition. The leader can never see a bare-call
+row, which is what makes the leader-double-claiming-bare-call-row class
 of race structurally impossible.
 
 `Recorder` exposes private write methods (`_insert_pending`,
@@ -157,32 +157,37 @@ handle = place_order.submit(req, key="order-42")
 job = await handle.wait(timeout=30.0)
 ```
 
-What's different (`_decorator.py::_submit` + `_worker.py`):
+What's different (`_decorator.py::_submit` + `_cli.py::cmd_run`):
 
-1. `_insert_pending(...)` runs in the caller's thread/loop, same as
-   bare.
-2. **`recorder._ensure_worker()`** — first call lazily spawns the
-   `Worker` (one asyncio loop in a dedicated thread; subsequent submits
-   reuse it).
-3. Returns a `JobHandle(job_id, recorder, kind)` immediately. The
-   wrapped function hasn't run yet.
-4. The worker's main loop, `_main()`, polls `_claim_one()` — an atomic
-   `UPDATE jobs SET status='running' ... WHERE status='pending'
-   RETURNING *` that doubles as the multi-process race-safe claim
-   primitive (SQLite WAL handles concurrent writers).
-5. For each claimed row, the worker spawns a task via
-   `asyncio.create_task(_execute(row))`. `_execute` sets `current_job`
-   *inside the task* before any await (so the contextvar reaches the
-   wrapped function regardless of whether it's coroutine or
-   `to_thread`'d). Then runs the function and writes terminal state —
-   same `_mark_completed`/`_mark_failed` machinery as the bare path.
-6. `handle.wait()` subscribes to the wait primitive
-   (`recorder._subscribe(job_id)`) and blocks until the terminal write
-   fires `_resolve(job_id, status)`.
+1. `_validate_call_args(...)` — same validation as bare.
+2. **Leader-presence gate.** `recorder._is_leader_running()` checks
+   for any fresh `_recorded.leader` heartbeat row. If none, `.submit()`
+   raises `ConfigurationError` *before* writing any row — loud failure
+   on misconfiguration. Bare-call paths do NOT call this check, so
+   Tier 1 stays free of leader-detection cost.
+3. `_insert_pending(...)` runs in the caller's thread/loop.
+4. Returns a `JobHandle(job_id, recorder, kind)` immediately. The
+   wrapped function hasn't run yet — it'll run inside the leader process.
+5. The leader process (`python -m recorded run --import myapp.tasks`)
+   loops on `_claim_one()` — an atomic `UPDATE jobs SET status='running'
+   ... WHERE status='pending' RETURNING *` that doubles as the
+   multi-process race-safe claim primitive (SQLite WAL handles
+   concurrent writers).
+6. For each claimed row, the leader spawns an asyncio task that runs
+   `_run_and_record_async`. That helper sets `current_job` inside the
+   task before any await (so the contextvar reaches the wrapped
+   function regardless of whether it's coroutine or `to_thread`'d) and
+   writes terminal state via the same `_mark_completed`/`_mark_failed`
+   machinery as the bare path.
+7. `handle.wait()` subscribes to the wait primitive
+   (`recorder._subscribe(job_id)`). Since the writer is in another
+   process, the local `_resolve` never fires — the polling fallback
+   (200ms cadence via `NOTIFY_POLL_INTERVAL_S`) rechecks `_row_status`
+   each tick and resolves when it sees a terminal status.
 
-The bare path runs the function in the caller's thread. The submitted
-path defers it to the worker. Identical row shape on both ends — same
-lifecycle invariant.
+The bare path runs the function in the caller's process. The submitted
+path runs it in the leader's process. Identical row shape on both
+ends — same lifecycle invariant.
 
 ## The wait primitive — one mechanism, four surfaces
 
@@ -284,9 +289,9 @@ ContextVar (not `threading.local`) because:
 - It propagates through `asyncio.gather` task boundaries correctly
   (each task gets its own copy via `Context.copy()`).
 - It propagates through `asyncio.to_thread` (Python 3.7+).
-- The worker-side `_execute` calls `current_job.set(ctx)` *inside the
-  task* before any await, so async functions and `to_thread`'d sync
-  functions both see the same ctx.
+- The leader's `_execute_claimed_row` calls `current_job.set(ctx)`
+  *inside the task* before any await, so async functions and
+  `to_thread`'d sync functions both see the same ctx.
 
 `attach(key, value)` writes to the data buffer; flushed at completion
 (or `flush=True` writes through immediately via `json_patch`).
@@ -359,16 +364,16 @@ async def lifespan(app):
         yield
 ```
 
-Bootstraps the connection (and reaper sweep) on enter, shuts down
-(drains worker, closes connection) on exit.
+Bootstraps the connection (and reaper sweep) on enter, closes the
+connection on exit.
 
 `Recorder.shutdown()` is idempotent — atexit + explicit shutdown can
 both fire safely.
 
 ## Deployment checklist
 
-`recorded` runs in-process against a SQLite WAL database. Two operational
-constraints apply:
+`recorded` runs in-process against a SQLite WAL database, with cross-
+process leadership for `.submit()`. Three operational constraints apply:
 
 - **Same-host storage.** SQLite WAL relies on shared-memory mmap on a
   single host. Network filesystems (NFS, EFS, SMB) are *not* supported by
@@ -384,13 +389,13 @@ constraints apply:
   to seconds. For multi-process deployments on shared infra: keep NTP
   healthy, or set `reaper_threshold_s` higher than the worst expected
   skew.
-- **Direct construction warns at exit.** `Recorder(path=...)` does not
-  register `atexit.register(shutdown)` — only `recorded.configure(...)`
-  does. Direct-construction code paths must use `with Recorder(...) as r:`
-  or call `r.shutdown()` explicitly; otherwise the daemon worker is killed
-  at interpreter teardown, converting in-flight successes into
-  `CancelledError` rows. A module-level atexit hook surfaces a warning
-  when this hazard is detected (see *Warnings policy* below).
+- **`.submit()` requires a leader process.** Run `python -m recorded run
+  --path <jobs.db> --import <module>` as a long-lived sibling process
+  (one per physical or logical worker). `.submit()` raises
+  `ConfigurationError` if no leader heartbeat is fresh; deployments
+  without a leader fail loudly on first submit. Probe via
+  `recorder.is_leader_running()` for health checks. See
+  [usage/workers.md](usage/workers.md).
 
 ## Warnings policy
 
@@ -398,8 +403,9 @@ The library emits two distinct categories of warning, surfaced through
 different channels:
 
 - **Lifecycle / usage hazards** — "your code is doing something the
-  library can't safely handle." Examples: dirty-recorder at interpreter
-  exit, worker drain timeout. These emit BOTH:
+  library can't safely handle." Examples: leader-heartbeat resurrection
+  (was reaped past the threshold, re-claimed slot), leader shutdown-
+  drain timeout. These emit BOTH:
   - `_logger.warning(...)` on the `recorded` logger (covers structured-
     logging deployments where stderr isn't routed)
   - `warnings.warn(msg, recorded.RecordedWarning, stacklevel=...)`
@@ -434,15 +440,22 @@ informational telemetry should stay logger-only.
 python -m recorded last [N] [--kind GLOB] [--status S] [--path P]
 python -m recorded get  <job_id> [--prompt] [--path P]
 python -m recorded tail [--kind GLOB] [--interval S] [--path P]
+python -m recorded run  [--path P] [--import MOD ...] [--shutdown-timeout S]
 ```
 
 Stdlib only (argparse). Each invocation builds its own short-lived
-`Recorder(path=...)` — never touches the module singleton (would
-unnecessarily spawn a worker thread the CLI doesn't use).
+`Recorder(path=...)` — never touches the module singleton.
+
+`run` is the leader process. It claims a `_recorded.leader` heartbeat
+row keyed by `host:pid`, refreshes it periodically, loops on
+`_claim_one()` to execute pending rows. SIGTERM/SIGINT triggers
+graceful drain (bounded by `--shutdown-timeout`) and DELETEs the
+heartbeat row. See [usage/workers.md](usage/workers.md).
 
 `--prompt` on `get` emits `Job.to_prompt()` for paste into an LLM.
-`tail` polls `list()` with a moving watermark + boundary-id set for
-de-dup.
+`tail` polls `query()` with a moving watermark + boundary-id set for
+de-dup. Reads filter out `_recorded.*` heartbeat rows by default;
+pass `--kind '_recorded.*'` to inspect them.
 
 ## Three invariants the runtime preserves
 
@@ -468,18 +481,18 @@ src/recorded/
   __init__.py     — public surface
   __main__.py     — `python -m recorded` shim
   _adapter.py     — Adapter ABC + Passthrough/Dataclass/Pydantic concrete subclasses
-  _cli.py         — last/get/tail subcommands
+  _cli.py         — last/get/tail/run subcommands; cmd_run is the leader process
   _context.py     — current_job ContextVar + attach() + attach_error()
-  _decorator.py   — @recorder + thin call-surface wrappers (bare sync, bare async, .submit)
-  _errors.py      — exception hierarchy
+  _decorator.py   — @recorder + bare-call wrappers + .submit (with leader gate)
+  _errors.py      — exception hierarchy + RecordedWarning
   _handle.py      — JobHandle + canonical _wait_for_terminal_{sync,async} helpers
   _lifecycle.py   — _run_and_record + _validate_call_args + _serialize_*
-                    + _write_completion (recording machinery shared by bare and worker)
-  _recorder.py    — Recorder (connection, writes, notify, live-result cache, reaper, configure)
+                    + _write_completion (recording machinery shared by bare + leader)
+  _recorder.py    — Recorder (connection, writes, notify, live-result cache, reaper,
+                    leader heartbeat protocol, configure)
   _registry.py    — kind → RegistryEntry
-  _storage.py     — schema DDL, canonical SQL, helpers
+  _storage.py     — schema DDL, canonical SQL, helpers, LEADER_KIND constant
   _types.py       — Job dataclass + duration_ms + to_prompt()
-  _worker.py      — Worker (asyncio loop in dedicated thread; thin: claim → _run_and_record_async)
   fastapi.py      — capture_request(request) (duck-typed)
 ```
 

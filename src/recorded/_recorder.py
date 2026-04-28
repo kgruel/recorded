@@ -1,7 +1,6 @@
 """Recorder: owns a SQLite connection, the read API, lifecycle SQL, the
-wait-primitive notify registry, the stuck-row reaper, and the worker.
-
-Phase 2 Stream A additions over phase 1:
+wait-primitive notify registry, the stuck-row reaper, and the leader
+heartbeat protocol.
 
 - `_subscribe`/`_resolve` notify primitive used by `JobHandle.wait()` and
   the idempotency-join paths in `_decorator`. Replaces the 5 ms sync-poll.
@@ -10,9 +9,9 @@ Phase 2 Stream A additions over phase 1:
   resolved.
 - Read API: `query()` (filtered iterator), public `connection()` alias of
   `_connection()`, `last(status=...)` for symmetry.
-- Atomic-claim helper used by the worker.
-- Lazy worker lifecycle (start on first `.submit()`; cancelled and joined
-  on `shutdown()`).
+- Atomic-claim helper used by the leader process.
+- Leader heartbeat: `_claim_leader_slot`/`_touch_leader_heartbeat`/
+  `is_leader_running` for the cross-process `.submit()` model.
 """
 
 from __future__ import annotations
@@ -23,14 +22,12 @@ import json
 import logging
 import sqlite3
 import threading
-import warnings
-import weakref
 from collections.abc import Callable, Iterator, Sequence
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from . import _registry, _storage
-from ._errors import ConfigurationError, RecordedWarning, RecorderClosedError
+from ._errors import ConfigurationError, RecorderClosedError
 from ._types import Job, _parse_iso
 
 _logger = logging.getLogger("recorded")
@@ -58,20 +55,14 @@ class Recorder:
     `atexit.register(self.shutdown)` — only `recorded.configure(...)` does.
     Test fixtures and explicit-instance code paths construct dozens of
     Recorders; auto-registering each would leak `atexit` callbacks for the
-    interpreter's lifetime. If you build a Recorder directly outside a
-    `with` block, you are responsible for calling `shutdown()` (or using
-    `with` / `async with`) before the interpreter exits — otherwise the
-    worker thread can race against interpreter teardown.
+    interpreter's lifetime. Use `with Recorder(path=...) as r:` (or `async
+    with`) for explicit instances; `recorded.configure(path=...)` for the
+    managed-singleton pattern.
 
-    A module-level atexit hook walks live (weak-referenced) Recorders and
-    logs a warning for any that started a worker but were never shut down.
-    Configured singletons run their `atexit.register(shutdown)` first
-    (LIFO order) and arrive at the warning hook with `_closed=True`, so the
-    warning targets only the dirty-direct-construction path.
-
-    Use `recorded.configure(path=...)` for the managed-singleton pattern;
-    use `with Recorder(path=...) as r:` (or `async with`) for explicit
-    instances.
+    `.submit()` requires a leader process (`python -m recorded run --path
+    <jobs.db>`) to claim and execute pending rows; `.submit()` raises
+    `ConfigurationError` if no leader heartbeat is fresh. Probe with
+    `recorder.is_leader_running()`.
     """
 
     def __init__(
@@ -82,19 +73,22 @@ class Recorder:
         worker_poll_interval_s: float = 0.2,
         join_timeout_s: float = DEFAULT_JOIN_TIMEOUT_S,
         warn_on_data_drift: bool = True,
+        leader_heartbeat_s: float = _storage.DEFAULT_LEADER_HEARTBEAT_S,
+        leader_stale_s: float = _storage.DEFAULT_LEADER_STALE_S,
     ) -> None:
         self.path = path
         self.reaper_threshold_s = reaper_threshold_s
         self.worker_poll_interval_s = worker_poll_interval_s
         self.join_timeout_s = join_timeout_s
         self.warn_on_data_drift = warn_on_data_drift
+        self.leader_heartbeat_s = leader_heartbeat_s
+        self.leader_stale_s = leader_stale_s
         # Per-Recorder dedup of projection-drift warnings, keyed by
         # `(kind, reason)`. Reset only by constructing a fresh Recorder.
         self._drift_warned: set[tuple[str, str]] = set()
 
-        # `_lock` guards Recorder resources: connection lifecycle (`_conn`,
-        # `_closed`) and worker lifecycle (`_worker`). Held briefly; never
-        # held across blocking operations (worker.shutdown(), SQL execute).
+        # `_lock` guards Recorder connection lifecycle (`_conn`, `_closed`).
+        # Held briefly; never held across blocking operations (SQL execute).
         self._lock = threading.Lock()
         # `_write_lock` serializes SQL execute+fetch on the shared connection
         # (see PROGRESS_INTEGRATION §3.1: stepping a cursor concurrently with
@@ -110,12 +104,13 @@ class Recorder:
         # would deadlock since the reaper holds `_lock` while resolving.
         self._notify_lock = threading.Lock()
         self._notify_subscribers: dict[str, list[concurrent.futures.Future]] = {}
-        # Live-result cache: in-process leaders stash their live result
-        # here before the terminal write so same-process idempotency
-        # joiners receive the typed object (not the storage-rehydrated
-        # dict). Only stashed for keyed rows. Cleared in `_resolve` on
-        # the no-subscriber path; drained by `JobHandle.wait()` so the
-        # storage-only consumer doesn't leak the entry.
+        # Live-result cache: in-process bare-call leaders stash their live
+        # result here before the terminal write so same-process
+        # idempotency-collision joiners (also bare-call) receive the typed
+        # object (not the storage-rehydrated dict). Only stashed for keyed
+        # rows. Cross-process .submit() leaders run in another process and
+        # don't populate this cache; cross-process joiners go through
+        # storage rehydration (the documented advanced contract).
         self._live_results: dict[str, Any] = {}
 
         # Test-only callback fired from `_subscribe` once the future is
@@ -130,16 +125,6 @@ class Recorder:
         # joiner), the callback should filter by `job_id` rather than just
         # signalling on any subscribe.
         self._for_testing_subscribe_callback: Callable[[str], None] | None = None
-
-        # Worker is lazy. Lifecycle (start + shutdown) is under `_lock` so
-        # `_closed` and `_worker` live in the same partition — a shutdown
-        # in flight can't race a concurrent `_ensure_worker()`.
-        self._worker: Any | None = None  # _worker.Worker; avoids circular import
-
-        # Track this instance for the dirty-recorder atexit warning. WeakSet
-        # so test suites that build dozens of Recorders don't accumulate
-        # callback state — collected instances drop out automatically.
-        _LIVE_RECORDERS.add(self)
 
     # ----- connection lifecycle -----
 
@@ -195,22 +180,10 @@ class Recorder:
 
     def shutdown(self) -> None:
         """Idempotent: safe to call repeatedly."""
-        # Atomically: mark closed (blocks new _ensure_worker) and snapshot
-        # the worker. The conn stays open during drain so in-flight worker
-        # tasks can finalize via `_mark_failed`.
         with self._lock:
             if self._closed:
                 return
             self._closed = True
-            worker = self._worker
-            self._worker = None
-        # Drain. `worker.shutdown()` waits for the worker thread, which
-        # needs to call back into the recorder via `_connection()` —
-        # released the lock before getting here.
-        if worker is not None:
-            worker.shutdown()
-        # Worker drained. Close the connection.
-        with self._lock:
             if self._conn is not None:
                 self._conn.close()
                 self._conn = None
@@ -250,14 +223,26 @@ class Recorder:
         kind: str | None = None,
         status: str | None = None,
     ) -> list[Job]:
+        # Reserved-kind exclusion: when `kind` is unspecified, hide library-
+        # internal rows (`_recorded.*`, e.g. leader heartbeats) so users
+        # browsing the audit log don't see them. Explicit `kind="_recorded.*"`
+        # opts in.
+        clauses = [
+            "(? IS NULL OR kind GLOB ?)",
+            "(? IS NULL OR status = ?)",
+        ]
+        params: list[Any] = [kind, kind, status, status]
+        if kind is None:
+            clauses.append("kind NOT GLOB ?")
+            params.append(_storage.RESERVED_KIND_GLOB)
         sql = (
             f"SELECT {', '.join(_storage.COLUMNS)} FROM jobs "
-            "WHERE (? IS NULL OR kind GLOB ?) "
-            "  AND (? IS NULL OR status = ?) "
+            f"WHERE {' AND '.join(clauses)} "
             "ORDER BY submitted_at DESC "
             "LIMIT ?"
         )
-        rows = self._fetchall(sql, (kind, kind, status, status, n))
+        params.append(n)
+        rows = self._fetchall(sql, tuple(params))
         return [_row_to_job(r) for r in rows]
 
     def query(
@@ -294,6 +279,12 @@ class Recorder:
         if kind is not None:
             clauses.append("kind GLOB ?")
             params.append(kind)
+        else:
+            # Reserved-kind exclusion: hide `_recorded.*` rows when the caller
+            # didn't ask for a specific kind. Explicit `kind="_recorded.*"`
+            # opts in (the branch above runs instead).
+            clauses.append("kind NOT GLOB ?")
+            params.append(_storage.RESERVED_KIND_GLOB)
         if status is not None:
             if isinstance(status, str):
                 clauses.append("status = ?")
@@ -573,23 +564,100 @@ class Recorder:
         for (job_id,) in rows:
             self._resolve(job_id, _storage.STATUS_FAILED)
 
-    # ----- worker accessors (used by _decorator) -----
+    # ----- leader heartbeat (cross-process leadership) -----
+    #
+    # Heartbeats live as `_recorded.leader` rows in the `jobs` table — see
+    # `_storage.LEADER_KIND` and WHY.md::Lifecycle (the heartbeat exception:
+    # these rows stay `running` indefinitely while their `started_at` is
+    # updated periodically). The reaper handles dead-leader cleanup
+    # automatically: a stale `running` row with old `started_at` gets flipped
+    # to `failed` on the next `_connection()` boot, and `is_leader_running()`
+    # then sees no fresh row.
 
-    def _ensure_worker(self) -> Any:
-        # Construct under `_lock` (same partition as `_closed`). `start()`
-        # spawns a thread but does not block on `_lock` — the new thread
-        # runs after we release.
-        with self._lock:
-            if self._closed:
-                raise RecorderClosedError(f"Recorder({self.path!r}) has been shut down.")
-            if self._worker is None:
-                # Lazy import to keep the worker module unloaded for
-                # bare-call-only code paths.
-                from . import _worker
+    def _claim_leader_slot(self, host_pid: str) -> str:
+        """Insert a fresh leader heartbeat row keyed by `host_pid`.
 
-                self._worker = _worker.Worker(self)
-                self._worker.start()
-            return self._worker
+        Returns the new row's job id. If a prior heartbeat row from the same
+        `(LEADER_KIND, host_pid)` is still active (e.g. our process restarted
+        before the reaper cleaned it out), DELETE it and re-INSERT. Different
+        `(host, pid)` pairs coexist — the partial unique index forbids
+        collisions only within the same key.
+        """
+        job_id = _storage.new_id()
+        now = _storage.now_iso()
+        try:
+            self._insert_running(job_id, _storage.LEADER_KIND, host_pid, now, now, None)
+        except sqlite3.IntegrityError:
+            # Stale heartbeat row from same host:pid (e.g. process restart
+            # before reaper sweep). Hard-delete and retry — the prior row
+            # was definitely abandoned because we are the same host:pid.
+            conn = self._connection()
+            with self._write_lock:
+                conn.execute(
+                    "DELETE FROM jobs WHERE kind=? AND key=? "
+                    "AND status IN ('pending', 'running', 'completed')",
+                    (_storage.LEADER_KIND, host_pid),
+                )
+            self._insert_running(job_id, _storage.LEADER_KIND, host_pid, now, now, None)
+        return job_id
+
+    def _touch_leader_heartbeat(self, leader_id: str) -> bool:
+        """Refresh `started_at` on a leader heartbeat row. Returns True if
+        the row is still ours (i.e. the conditional UPDATE matched).
+
+        Deliberately bypasses `_resolve()`: heartbeat rows have no
+        subscribers — they are liveness signals, not jobs. The conditional
+        `status='running'` guard means a reaper-flipped row no-ops here;
+        the leader's caller checks the return and re-claims a new slot if
+        False (resurrection edge per PLAN.md §6.3).
+        """
+        rowcount = self._execute_count(
+            "UPDATE jobs SET started_at=? WHERE id=? AND status='running'",
+            (_storage.now_iso(), leader_id),
+        )
+        return rowcount > 0
+
+    def _release_leader_slot(self, leader_id: str) -> None:
+        """DELETE the leader's own heartbeat row on graceful shutdown.
+
+        Symmetric with `_claim_leader_slot`. Avoids accumulating stale
+        heartbeat rows across leader restarts that cleanly hand off (no
+        crash, no SIGKILL). Crash-mode cleanup falls back to the reaper.
+        """
+        conn = self._connection()
+        with self._write_lock:
+            conn.execute(
+                "DELETE FROM jobs WHERE id=? AND kind=?",
+                (leader_id, _storage.LEADER_KIND),
+            )
+
+    def _is_leader_running(self) -> bool:
+        """Cheap probe: any fresh `_recorded.leader` row?
+
+        "Fresh" means `started_at >= now() - leader_stale_s`. The reaper
+        threshold is independent (typically 10× larger): staleness fails
+        fast for `.submit()` gating; the reaper only cleans up genuinely
+        dead processes.
+        """
+        threshold_iso = _storage.format_iso(
+            datetime.now(timezone.utc) - timedelta(seconds=self.leader_stale_s)
+        )
+        row = self._fetchone(
+            "SELECT 1 FROM jobs WHERE kind=? AND status='running' AND started_at >= ? LIMIT 1",
+            (_storage.LEADER_KIND, threshold_iso),
+        )
+        return row is not None
+
+    def is_leader_running(self) -> bool:
+        """Public probe: is a leader process actively claiming jobs against
+        this Recorder's database?
+
+        Returns True if any `_recorded.leader` heartbeat row was refreshed
+        within `leader_stale_s` (default 30s). Use this in deployment
+        health checks before issuing `.submit()` calls — `.submit()` raises
+        `ConfigurationError` when this returns False.
+        """
+        return self._is_leader_running()
 
 
 # ----- helpers -----
@@ -620,39 +688,6 @@ def _normalize_iso(value: str | datetime) -> str:
 _default: Recorder | None = None
 _default_lock = threading.Lock()
 _atexit_registered_for: set[int] = set()
-
-
-# ----- dirty-recorder atexit warning ----------------------------------------
-
-_LIVE_RECORDERS: weakref.WeakSet[Recorder] = weakref.WeakSet()
-
-
-def _atexit_warn_dirty_recorders() -> None:
-    """Emit a warning at interpreter exit for any live Recorder that started a
-    worker but was never shut down. Configure-managed singletons register
-    `atexit.register(r.shutdown)` *after* this hook, and atexit runs LIFO, so
-    they are shut down first and arrive here with `_closed=True` (silent).
-
-    The hazard surfaced by this warning: a daemon worker thread killed by
-    interpreter teardown converts in-flight successes into CancelledError
-    rows — see WHY.md / direct-construction docstring.
-    """
-    for r in list(_LIVE_RECORDERS):
-        if r._worker is not None and not r._closed:
-            msg = (
-                f"recorded[{r.path}]: Recorder was constructed directly but never "
-                "shut down before interpreter exit. The daemon worker thread "
-                "is being killed; in-flight results are recorded as "
-                "CancelledError rather than completed. Use `with "
-                "Recorder(...) as r:` (or `recorded.configure(...)` for the "
-                "managed-singleton pattern) so shutdown is guaranteed."
-            )
-            _logger.warning("%s", msg)
-            # stacklevel=1: atexit context has no meaningful caller frame.
-            warnings.warn(msg, RecordedWarning, stacklevel=1)
-
-
-atexit.register(_atexit_warn_dirty_recorders)
 
 
 def get_default() -> Recorder:

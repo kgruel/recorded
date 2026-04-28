@@ -20,7 +20,8 @@ tour; the **By need** table below it is a faster path to a specific goal.
    `JoinedSiblingFailedError`, the partial-unique-index that makes it
    work across processes.
 5. **[workers.md](workers.md)** — `.submit()`, `JobHandle.wait()`, the
-   lazy worker, the reaper, multi-process atomic claims.
+   leader process (`python -m recorded run`), the heartbeat row, the
+   reaper, multi-process atomic claims.
 6. **[typed-slots.md](typed-slots.md)** — `request` / `response` /
    `data` / `error` models, auto-projection, `attach()` /
    `attach_error()`, the audit invariant.
@@ -41,7 +42,7 @@ tour; the **By need** table below it is a faster path to a specific goal.
 |---|---|
 | record API calls right now | [decorator.md](decorator.md) → [reading.md](reading.md) |
 | dedupe expensive calls | [idempotency.md](idempotency.md) |
-| run work in the background | [workers.md](workers.md) |
+| run work in a separate process | [workers.md](workers.md) |
 | validate inputs/outputs against a model | [typed-slots.md](typed-slots.md) |
 | query the recorded log later | [queries.md](queries.md) |
 | wire this into a FastAPI app | [fastapi.md](fastapi.md) |

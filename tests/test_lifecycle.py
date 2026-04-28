@@ -283,19 +283,24 @@ def test_multi_arg_request_captured_as_envelope(default_recorder):
     assert json.loads(raw) == {"args": [1, 2], "kwargs": {"label": "hi"}}
 
 
-# --- submit returns a JobHandle (Stream A.2 worker is wired) --------------
+# --- submit returns a JobHandle (cross-process leader path) ---------------
 
 
-def test_submit_returns_handle(default_recorder):
-    """Phase 2 Stream A.2 wired `.submit` through the worker."""
+def test_submit_returns_handle(leader_recorder):
+    """End-to-end: `.submit()` returns a `JobHandle`; leader subprocess
+    executes the row; `wait_sync()` returns the terminal `Job`."""
+    import sys
+
     from recorded import JobHandle
 
-    @recorder(kind="t.submit")
-    def f(x):
-        return x
+    sys.path.insert(0, __file__.rsplit("/", 1)[0])
+    try:
+        import _leader_kinds
+    finally:
+        sys.path.pop(0)
 
-    h = f.submit(1)
+    h = _leader_kinds.echo.submit(1)
     assert isinstance(h, JobHandle)
     job = h.wait_sync(timeout=5.0)
     assert job.status == "completed"
-    assert job.response == 1
+    assert job.response == {"echoed": 1}

@@ -48,7 +48,7 @@ Two main subtrees:
 
 ### `ConfigurationError`
 
-Bad decorator setup or call shape. Examples:
+Bad decorator setup, call shape, or operational state. Examples:
 
 - `key=` passed at a call site whose decorator has an auto-derived `kind`.
   Idempotency requires explicit `kind=`. See
@@ -58,8 +58,13 @@ Bad decorator setup or call shape. Examples:
 - `request=Model` declared but the call passes multiple positional /
   keyword arguments. The library can't tell which arg is the model
   instance — declare a single explicit request parameter.
+- `kind="_recorded.*"` — reserved prefix; user code can't decorate with it.
 - `where_data` key contains `.` or `$` (nested-path attempt). Use
   `recorded.connection()` for richer queries.
+- **`.submit()` called with no leader process running.** Start
+  `python -m recorded run --path <jobs.db> --import <module>` as a
+  sibling process, or call the function bare (without `.submit()`).
+  Probe with `recorder.is_leader_running()` for health checks.
 
 Always raised at decoration time or call time, never on the recording
 path.
