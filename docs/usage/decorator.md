@@ -121,7 +121,7 @@ your call sites would still work. The only differences vanish — the audit
 trail and the keyed-call surfaces (`.submit()`, `JobHandle.wait()`,
 `JoinedSiblingFailedError`).
 
-> Architecture context: [`docs/WHY.md` — wrap-transparency, scoped to basic](../WHY.md#2-wrap-transparency-scoped-to-basic)
+> Architecture context: [`docs/WHY.md` — wrap-transparency, scoped to basic](../WHY.md#wrap-transparency)
 
 ## What the wrapper adds
 

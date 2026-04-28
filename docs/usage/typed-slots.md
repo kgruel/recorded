@@ -243,5 +243,5 @@ the `recorded` logger, and the wrapped function's natural value is still
 returned to the caller — wrap-transparency requires bare-call surfaces never
 raise an exception class the wrapped function wouldn't.
 
-> Architecture context: [`docs/WHY.md` — wrap-transparency](../WHY.md#2-wrap-transparency-scoped-to-basic)
-> · [`docs/WHY.md` — mid-execution attach](../WHY.md#mid-execution-attach)
+> Architecture context: [`docs/WHY.md` — wrap-transparency](../WHY.md#wrap-transparency)
+> · [`docs/WHY.md` — mid-execution attach](../WHY.md#contextvars-for-attach)
