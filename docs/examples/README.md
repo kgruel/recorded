@@ -54,3 +54,24 @@ pip install recorded httpx
 python docs/examples/03_api_consumer.py
 python docs/examples/03_api_consumer.py        # again — see idempotency
 ```
+
+## `04_treasury_snapshot.py` — pulling it all together
+
+Stitches three U.S. Treasury Fiscal Data endpoints (debt-to-the-penny,
+average interest rates by security, FX rates per currency) into a single
+`FiscalSnapshot` Pydantic model. Three `@recorder` functions, one per
+endpoint, each with its own typed `data=` slot. `key=` is stamped with
+today's date — second run same day is a free cache hit. The synthesis
+beat at the end runs `recorded.query(kind="treasury.*", since=TODAY)`
+and folds today's rows into the snapshot shape.
+
+Shows: multiple typed slots side-by-side, `attach()` per call,
+date-stamped idempotency keys for daily-refresh semantics, glob
+`kind=` filters, the recorded log composing into a derived shape via
+the read API. No inline comments — read the code.
+
+```bash
+pip install recorded httpx pydantic
+python docs/examples/04_treasury_snapshot.py
+python docs/examples/04_treasury_snapshot.py   # second run — zero HTTP
+```

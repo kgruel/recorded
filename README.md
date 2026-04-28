@@ -1,16 +1,21 @@
 # recorded
 
-`@recorder` turns every call to a Python function into a row in SQLite —
-args, return value, exceptions, duration. Inspect later with the read API,
-the CLI, or any tool that talks to a SQLite file.
+`@recorder` turns each function call into a queryable typed row. Four
+properties together — that's the library, and the reason it isn't a
+logging tool you already have:
 
-> **Privacy:** `recorded` writes function arguments, return values, and
-> exceptions to SQLite verbatim. The DB at `jobs.db` becomes a durable
-> record of everything wrapped — including any secrets the function
-> handled. Use [`recorded.fastapi.capture_request(redact_headers=...)`](docs/usage/fastapi.md)
-> for HTTP request capture; for general functions, redact sensitive
-> arguments yourself before they cross the decorator boundary. See
-> [configuration](docs/usage/configuration.md) for redaction options.
+- **Transparent at the call site.** The wrapped function still returns
+  its natural value; adding or removing `@recorder` is a safe edit at
+  every call site, with no shape change for callers.
+- **Idempotent by key.** Pass `key="..."` and the second call returns
+  the recorded response without re-running the function. Same key in
+  another process joins the in-flight work.
+- **Projected, not just logged.** Declare `data=Model` and that slot
+  becomes a queryable index over the full payload — the wide response
+  stays on disk faithfully; `data` is the slice you'll filter on.
+- **Read API shaped for LLMs.** Pull rows back as typed objects,
+  filter by `data` fields, or render any row as prompt-ready context
+  with `Job.to_prompt()`.
 
 ```python
 from recorded import recorder, last
@@ -23,38 +28,21 @@ place_order("AAPL", 100)            # runs as normal — but recorded
 print(last(1)[0].response)          # {'order_id': 'ord-9281', ...}
 ```
 
-Need leader-process durability or fire-and-wait handles? See
-[Advanced: durable submission](#advanced-durable-submission-via-leader-process).
+The substrate is one SQLite file (`jobs.db`), four slots per row, a
+three-write lifecycle. The bare-call path above is what most apps run;
+durable submission via a leader process is opt-in and lives in its own
+[Advanced section](#advanced-durable-submission-via-leader-process)
+below.
 
-The library is small by design. A four-slot row, a three-write lifecycle,
-and a transparent decorator — that's the spine. Idempotency keys, typed
-projections, queryable data slots, FastAPI integration, and cross-process
-`.submit()` all layer on without changing the bare-call shape: removing
-`@recorder` doesn't change return-type or exception-type shape, only the
-side effect goes away.
+> **Privacy:** `recorded` writes function arguments, return values, and
+> exceptions to SQLite verbatim. The DB at `jobs.db` becomes a durable
+> record of everything wrapped — including any secrets the function
+> handled. Use [`recorded.fastapi.capture_request(redact_headers=...)`](docs/usage/fastapi.md)
+> for HTTP request capture; for general functions, redact sensitive
+> arguments yourself before they cross the decorator boundary. See
+> [configuration](docs/usage/configuration.md) for redaction options.
 
 ---
-
-## What it gives you
-
-- **Audit trail without ceremony.** Every call is a row, automatically.
-  The bare call returns the wrapped function's natural value — adding or
-  removing `@recorder` is a safe edit at every call site.
-- **Idempotency keys.** Pass `key="..."` and the second call is free.
-  Same key in another process? It joins the in-flight work and returns
-  the same response.
-- **Typed slots.** Pydantic v2 or `@dataclass`, duck-typed (never
-  imported). Validates on the way in, rehydrates typed objects on the
-  way out.
-- **Queryable projections.** Declare `data=Model` and
-  `recorded.query(where_data=...)` filters by JSON-extracted columns.
-  Anything richer drops to `recorded.connection()` and raw SQL.
-- **CLI + LLM-ready prompts.** `python -m recorded last/get/tail`, plus
-  `Job.to_prompt()` for pasting a row back into a model as context.
-- **Optional cross-process submission.** `.submit()` enqueues a job that
-  a separate leader process executes; `JobHandle.wait()` blocks for
-  completion. Opt-in tier — bare-call paths are leader-free. See
-  [Advanced: durable submission](#advanced-durable-submission-via-leader-process).
 
 ## What it isn't
 

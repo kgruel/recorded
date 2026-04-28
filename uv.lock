@@ -679,6 +679,10 @@ dev = [
     { name = "ruff" },
     { name = "ty" },
 ]
+fastapi = [
+    { name = "fastapi" },
+    { name = "pydantic" },
+]
 matrix = [
     { name = "tox" },
     { name = "tox-uv" },
@@ -690,9 +694,11 @@ pydantic = [
 [package.metadata]
 requires-dist = [
     { name = "fastapi", marker = "extra == 'dev'", specifier = ">=0.110" },
+    { name = "fastapi", marker = "extra == 'fastapi'", specifier = ">=0.110" },
     { name = "httpx", marker = "extra == 'dev'", specifier = ">=0.27" },
     { name = "hypothesis", marker = "extra == 'dev'", specifier = ">=6" },
     { name = "pydantic", marker = "extra == 'dev'", specifier = ">=2" },
+    { name = "pydantic", marker = "extra == 'fastapi'", specifier = ">=2" },
     { name = "pydantic", marker = "extra == 'pydantic'", specifier = ">=2" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8" },
     { name = "pytest-asyncio", marker = "extra == 'dev'", specifier = ">=0.23" },
@@ -704,7 +710,7 @@ requires-dist = [
     { name = "tox-uv", marker = "extra == 'matrix'", specifier = ">=1.13" },
     { name = "ty", marker = "extra == 'dev'", specifier = ">=0.0.1a1" },
 ]
-provides-extras = ["pydantic", "matrix", "dev"]
+provides-extras = ["pydantic", "fastapi", "matrix", "dev"]
 
 [[package]]
 name = "ruff"

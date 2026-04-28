@@ -11,8 +11,15 @@ build/
 .coverage
 .subtask/
 
+# Runtime artifacts from running the examples / local scripts.
+jobs.db
+jobs.db-shm
+jobs.db-wal
+
 # Session artifacts from /autoresearch:predict + debug swarms.
-# RESOLUTION.md content is mirrored into HANDOFF.md when relevant.
+# Pre-release working notes (snapshot, decision queue) — dumped at release.
 debug/
 predict/
 .mcp.json
+.gemini/
+HANDOFF.md
