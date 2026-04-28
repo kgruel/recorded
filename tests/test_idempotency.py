@@ -87,7 +87,7 @@ async def test_idempotency_collision_returns_existing_completed_without_reexecut
 
 
 @pytest.mark.asyncio
-async def test_idempotency_collision_on_pending_waits_for_terminal(default_recorder):
+async def test_idempotency_collision_on_pending_waits_for_terminal(default_recorder, monkeypatch):
     """Named test: two callers race the same `key`. Exactly one executes;
     the other observes the active row and joins on its terminal status.
 
@@ -111,12 +111,22 @@ async def test_idempotency_collision_on_pending_waits_for_terminal(default_recor
     async def caller():
         return await slow(key="race-1")
 
+    # Fire `proceed.set()` once B has parked on `_subscribe` — that's
+    # the precondition the test was approximating with `sleep(0.02)`.
+    subscribed = asyncio.Event()
+    loop = asyncio.get_running_loop()
+
+    def on_subscribe(_jid: str) -> None:
+        loop.call_soon_threadsafe(subscribed.set)
+
+    monkeypatch.setattr(default_recorder, "_for_testing_subscribe_callback", on_subscribe)
+
     a_task = asyncio.create_task(caller())
     # Wait until A has reached `running`. B will collide on INSERT and poll.
     await started.wait()
     b_task = asyncio.create_task(caller())
-    # Give B time to collide and start polling.
-    await asyncio.sleep(0.02)
+    # B has reached `_subscribe` on the active row.
+    await subscribed.wait()
     proceed.set()
 
     a, b = await asyncio.gather(a_task, b_task)
@@ -197,7 +207,7 @@ async def test_idempotency_retry_failed_false_raises_joined_sibling_failed(
 
 
 @pytest.mark.asyncio
-async def test_typed_instance_join_preserves_type_in_process(default_recorder):
+async def test_typed_instance_join_preserves_type_in_process(default_recorder, monkeypatch):
     """Same-process key-collision joiner receives the leader's live typed
     object, not the storage-rehydrated dict. Wrap-transparency holds for
     typed returns under `key=` without requiring `response=Model`.
@@ -222,12 +232,21 @@ async def test_typed_instance_join_preserves_type_in_process(default_recorder):
         await proceed.wait()
         return OrderReply(order_id=f"order-{req}", amount=42)
 
+    subscribed = asyncio.Event()
+    loop = asyncio.get_running_loop()
+
+    def on_subscribe(_jid: str) -> None:
+        loop.call_soon_threadsafe(subscribed.set)
+
+    monkeypatch.setattr(default_recorder, "_for_testing_subscribe_callback", on_subscribe)
+
     leader_task = asyncio.create_task(place_order("A", key="kk"))
     await started.wait()
 
     joiner_task = asyncio.create_task(place_order("A", key="kk"))
-    # Yield once so the joiner reaches its wait state.
-    await asyncio.sleep(0.05)
+    # Joiner has parked on `_subscribe`, so the live-result cache will
+    # have a consumer when the leader resolves.
+    await subscribed.wait()
     proceed.set()
     leader_result, joiner_result = await asyncio.gather(leader_task, joiner_task)
 

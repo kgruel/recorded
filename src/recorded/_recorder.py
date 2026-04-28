@@ -24,7 +24,7 @@ import logging
 import sqlite3
 import threading
 import weakref
-from collections.abc import Iterator, Sequence
+from collections.abc import Callable, Iterator, Sequence
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
@@ -116,6 +116,19 @@ class Recorder:
         # the no-subscriber path; drained by `JobHandle.wait()` so the
         # storage-only consumer doesn't leak the entry.
         self._live_results: dict[str, Any] = {}
+
+        # Test-only callback fired from `_subscribe` once the future is
+        # registered (whether it parks or pre-resolves inline). Used by
+        # tests that need to coordinate with the moment a waiter is
+        # parked on a row, without sleeping for "give wait() a chance"
+        # — the only consumer is the test suite, marked `_for_testing_*`
+        # to match `_set_default_for_testing`.
+        #
+        # Fires once per `_subscribe` call. If a test path can have multiple
+        # subscribers on the same row (e.g. `JobHandle.wait()` + idempotency
+        # joiner), the callback should filter by `job_id` rather than just
+        # signalling on any subscribe.
+        self._for_testing_subscribe_callback: Callable[[str], None] | None = None
 
         # Worker is lazy. Lifecycle (start + shutdown) is under `_lock` so
         # `_closed` and `_worker` live in the same partition — a shutdown
@@ -471,6 +484,8 @@ class Recorder:
                         self._notify_subscribers.pop(job_id, None)
             if not fut.done():
                 fut.set_result(status)
+        if self._for_testing_subscribe_callback is not None:
+            self._for_testing_subscribe_callback(job_id)
         return fut
 
     def _unsubscribe(self, job_id: str, fut: concurrent.futures.Future) -> None:

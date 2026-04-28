@@ -114,9 +114,7 @@ async def test_handle_wait_timeout_raises_join_timeout(default_recorder):
 
 
 @pytest.mark.asyncio
-async def test_handle_wait_raises_row_disappeared_when_row_deleted(
-    default_recorder,
-):
+async def test_handle_wait_raises_row_disappeared_when_row_deleted(default_recorder, monkeypatch):
     """A waiter parked on a row that gets deleted out from under it must
     fail-fast with `RowDisappearedError` rather than wait until
     `JoinTimeoutError` (default 30 s) elapses."""
@@ -130,9 +128,19 @@ async def test_handle_wait_raises_row_disappeared_when_row_deleted(
 
     h = JobHandle(job_id, rec, "t.handle.disappear")
 
-    # Schedule a deletion shortly after wait() parks.
+    # Fire the deletion exactly once `_subscribe` has registered our
+    # future — the precondition `RowDisappearedError` requires.
+    parked = asyncio.Event()
+    loop = asyncio.get_running_loop()
+
+    def on_subscribe(jid: str) -> None:
+        if jid == job_id:
+            loop.call_soon_threadsafe(parked.set)
+
+    monkeypatch.setattr(rec, "_for_testing_subscribe_callback", on_subscribe)
+
     async def _delete_after_park():
-        await asyncio.sleep(0.05)
+        await parked.wait()
         await asyncio.to_thread(
             lambda: rec.connection().execute("DELETE FROM jobs WHERE id = ?", (job_id,)),
         )
@@ -148,9 +156,7 @@ async def test_handle_wait_raises_row_disappeared_when_row_deleted(
         await deleter
 
 
-def test_handle_wait_sync_raises_row_disappeared_when_row_deleted(
-    default_recorder,
-):
+def test_handle_wait_sync_raises_row_disappeared_when_row_deleted(default_recorder, monkeypatch):
     """Sync variant of the disappear-fail-fast contract."""
     import threading
 
@@ -162,11 +168,17 @@ def test_handle_wait_sync_raises_row_disappeared_when_row_deleted(
 
     h = JobHandle(job_id, rec, "t.handle.disappear_sync")
 
-    # Delete the row from another thread shortly after wait_sync parks.
-    def _delete_after_park():
-        import time
+    # Delete the row once `wait_sync()` has parked on `_subscribe`.
+    parked = threading.Event()
 
-        time.sleep(0.05)
+    def on_subscribe(jid: str) -> None:
+        if jid == job_id:
+            parked.set()
+
+    monkeypatch.setattr(rec, "_for_testing_subscribe_callback", on_subscribe)
+
+    def _delete_after_park():
+        parked.wait(timeout=5.0)
         rec.connection().execute("DELETE FROM jobs WHERE id = ?", (job_id,))
 
     t = threading.Thread(target=_delete_after_park, daemon=True)

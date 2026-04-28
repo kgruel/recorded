@@ -141,10 +141,12 @@ def test_recorder_shutdown_is_idempotent_and_drains_worker(db_path):
 
     _recorder_mod._set_default_for_testing(rec)
 
+    started = threading.Event()
     proceed = threading.Event()
 
     @recorder(kind="t.worker.shutdown")
     def slow(x):
+        started.set()
         # Wait for the test to release us (or until shutdown cancellation).
         if not proceed.wait(timeout=5.0):
             return x
@@ -152,8 +154,8 @@ def test_recorder_shutdown_is_idempotent_and_drains_worker(db_path):
 
     try:
         h1 = slow.submit(1)
-        # Give worker a chance to claim+start.
-        time.sleep(0.05)
+        # Wait until the worker has actually claimed and entered `slow`.
+        assert started.wait(timeout=5.0)
         # Shut down WHILE in-flight. Should cancel and join.
         rec.shutdown()
         rec.shutdown()  # idempotent
@@ -283,6 +285,10 @@ def test_worker_marks_unknown_kind_pending_row_as_failed(default_recorder):
         '{"x": 1}',
     )
 
+    # Subscribe BEFORE triggering so the worker's `_mark_failed` resolves
+    # us deterministically — no polling needed.
+    unknown_fut = rec._subscribe(unknown_id)
+
     # Start the worker by submitting a registered kind. The worker's
     # claim loop will pick up our seeded pending row too.
     @recorder(kind="t.worker.unknown_kind_trigger")
@@ -292,13 +298,8 @@ def test_worker_marks_unknown_kind_pending_row_as_failed(default_recorder):
     h = trigger.submit(0)
     h.wait_sync(timeout=5.0)
 
-    # Wait briefly for the worker to fail the unknown-kind row.
-    deadline = time.monotonic() + 5.0
-    while time.monotonic() < deadline:
-        job = rec.get(unknown_id)
-        if job is not None and job.status == _storage.STATUS_FAILED:
-            break
-        time.sleep(0.02)
+    # Wait for the worker's `_mark_failed` to resolve our subscription.
+    assert unknown_fut.result(timeout=5.0) == _storage.STATUS_FAILED
 
     job = rec.get(unknown_id)
     assert job is not None
@@ -348,15 +349,14 @@ def test_worker_marks_claimed_row_failed_if_shutdown_fires_after_claim(db_path):
         # the worker won't actually claim because we'll intercept).
         worker = rec._ensure_worker()
 
-        # Wait for the worker loop to be ready.
-        deadline = time.monotonic() + 2.0
-        while worker._loop is None and time.monotonic() < deadline:
-            time.sleep(0.005)
+        # `_loop_ready` is set inside `_run` once the loop is bound.
+        assert worker._loop_ready.wait(timeout=2.0)
         assert worker._loop is not None
 
-        # Monkey-patch `_claim_one` to set `_loop_shutdown` BEFORE returning
-        # the seeded row, simulating shutdown firing in the gap between
-        # claim-success and task-spawn.
+        # Monkey-patch `_claim_one` BEFORE doing anything else that touches
+        # the recorder under `_write_lock` — interposing extra work between
+        # `_ensure_worker()` and the patch widens the window in which the
+        # worker can claim the seeded row through the unpatched `_claim_one`.
         original_claim = rec._claim_one
         triggered = threading.Event()
 
@@ -366,21 +366,17 @@ def test_worker_marks_claimed_row_failed_if_shutdown_fires_after_claim(db_path):
                 triggered.set()
                 # Set the event from the worker's loop thread.
                 worker._loop.call_soon_threadsafe(worker._loop_shutdown.set)
-                # Tiny pause so the event-set is processed before the
-                # main loop's next is_set() check.
-                time.sleep(0.01)
             return row
 
         rec._claim_one = claim_then_signal_shutdown  # type: ignore[method-assign]
 
-        # Wait for the worker to claim and bail.
-        deadline = time.monotonic() + 5.0
-        while time.monotonic() < deadline:
-            if triggered.is_set():
-                # Give the worker a moment to write the cancel marker.
-                time.sleep(0.1)
-                break
-            time.sleep(0.02)
+        # Subscribe to the seeded row so we get a deterministic signal
+        # when the worker writes the cancel marker — no polling.
+        target_fut = rec._subscribe(target_id)
+
+        # Wait for the worker's cancel-marker write to resolve our subscription.
+        assert target_fut.result(timeout=5.0) == _storage.STATUS_FAILED
+        assert triggered.is_set()
 
         # Worker thread should have exited (loop_shutdown is set).
         # Don't assert thread-gone yet — shutdown() will join below.

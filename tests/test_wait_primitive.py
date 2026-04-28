@@ -101,6 +101,16 @@ def test_idempotency_join_in_process_does_not_poll_with_sleep(default_recorder, 
 
     join_result: dict = {}
 
+    # Fires on the joiner thread once it enters `_subscribe`. `Event.set()`
+    # is sleep-free, so the join-path-must-not-sleep assertion is preserved.
+    parked = threading.Event()
+
+    def on_subscribe(jid: str) -> None:
+        if jid == job_id:
+            parked.set()
+
+    monkeypatch.setattr(rec, "_for_testing_subscribe_callback", on_subscribe)
+
     def joiner() -> None:
         # Patch *inside* the joiner thread so we only count sleeps that
         # happen on the join path (not test-harness overhead like the
@@ -113,8 +123,8 @@ def test_idempotency_join_in_process_does_not_poll_with_sleep(default_recorder, 
 
     t = threading.Thread(target=joiner)
     t.start()
-    # Give the joiner a moment to enter `_subscribe` and block on `fut.result`.
-    real_sleep(0.05)
+    # Joiner has parked on `_subscribe`; safe to write terminal.
+    assert parked.wait(timeout=5.0)
     rec._mark_completed(job_id, _storage.now_iso(), '{"x": 1}', None)
     t.join(timeout=5.0)
 
@@ -148,14 +158,22 @@ async def test_idempotency_join_uses_notify_not_polling(default_recorder, monkey
     a_task = asyncio.create_task(slow(key="kk2"))
     await started.wait()
 
+    # Fires once B parks on `_subscribe`. `Event.set` via call_soon is
+    # sleep-free, preserving the "join path must not sleep" invariant.
+    subscribed = asyncio.Event()
+    loop = asyncio.get_running_loop()
+
+    def on_subscribe(_jid: str) -> None:
+        loop.call_soon_threadsafe(subscribed.set)
+
+    monkeypatch.setattr(default_recorder, "_for_testing_subscribe_callback", on_subscribe)
+
     # Patch only after the leader is past its own internal awaits.
     monkeypatch.setattr(aio_mod, "sleep", tracking_async_sleep)
     try:
         b_task = asyncio.create_task(slow(key="kk2"))
-        # Let B reach `_async_wait_for_terminal`; use the *original*
-        # asyncio.sleep via real_async_sleep so this scheduling tick
-        # isn't counted against the join path.
-        await real_async_sleep(0.02)
+        # B has reached `_async_wait_for_terminal` and subscribed.
+        await subscribed.wait()
         proceed.set()
         a, b = await asyncio.gather(a_task, b_task)
     finally:
