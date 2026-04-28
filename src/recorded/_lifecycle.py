@@ -11,17 +11,15 @@ Contents:
 - `_validate_call_args`: refuse-to-compile rules at call time.
 - `_capture_request`, `_serialize_request`: request envelope + JSON.
 - `_serialize_error`, `_serialize_recording_failure`: error envelope + JSON.
-- `_write_completion`, `_build_data_json`, `_project_response`: success-path
-  recording (response + data projection + attach buffer flush).
+- `_write_completion`, `_build_data_json`: success-path recording
+  (response + data projection + attach buffer flush).
 """
 
 from __future__ import annotations
 
 import asyncio
-import dataclasses
 import json
 import logging
-from dataclasses import is_dataclass
 from typing import TYPE_CHECKING, Any
 
 from . import _registry, _storage
@@ -204,7 +202,7 @@ def _write_completion(
         if result is None
         else json.dumps(entry.response.serialize(result))
     )
-    data_json = _build_data_json(entry, result, buffer)
+    data_json = _build_data_json(recorder_inst, entry, result, buffer)
     # Stash the live result only for keyed rows — those are the only ones
     # that can grow same-process idempotency joiners. Non-keyed rows have
     # no possible joiner (no key to collide on), so caching their result
@@ -216,43 +214,68 @@ def _write_completion(
 
 
 def _build_data_json(
-    entry: _registry.RegistryEntry, response: Any, buffer: dict[str, Any]
+    recorder_inst: Recorder,
+    entry: _registry.RegistryEntry,
+    response: Any,
+    buffer: dict[str, Any],
 ) -> str | None:
     """Compose `data_json` from optional projection + attach buffer.
 
     Conflict rule (DESIGN.md): the projection populates initial keys;
     attaches merge in last-write-wins.
 
-    Projection-from-response is best-effort. The supported source shapes
-    (driven by `entry.data._kind`):
-
-    - dataclass-typed slot, dict response: validate by construction, dump.
-    - dataclass-typed slot, instance of `data` model: `dataclasses.asdict`.
-    - dataclass-typed slot, *some other* dataclass instance: dump it,
-      filter to `data` model's declared field names.
-    - pydantic-typed slot, dict response: `model_validate(...).model_dump(mode="json")`.
-    - pydantic-typed slot, instance of `data` model: `model_dump(mode="json")`.
-    - pydantic-typed slot, *some other* pydantic instance: `model_dump(mode="json")`,
-      filter to `data` model's declared field names.
-
-    Anything else falls through with no projection, leaving only the
-    attach buffer (which may be empty). The full response is still in
-    `response_json`; data is the queryable projection.
+    Projection runs only when the response shape matches the data slot's
+    declared model — either an instance of the model, or a dict that
+    validates against it. Anything else falls through to `{}`; if
+    `warn_on_data_drift` is on, the drift is surfaced once per
+    `(kind, reason)` per Recorder.
     """
     projected: dict[str, Any] = {}
-    model = entry.data.model
-    if model is not None:
-        try:
-            projected = _project_response(entry.data._kind, model, response)
-        except Exception:
-            # Projection is opportunistic — a partial response is still recorded
-            # via response_json; we just skip the projected slice.
-            projected = {}
+    project_error: Exception | None = None
+    try:
+        projected = entry.data.project(response)
+    except Exception as exc:
+        # Projection is opportunistic — a partial response is still
+        # recorded via response_json; we just skip the projected slice.
+        project_error = exc
 
     merged = {**projected, **buffer}
+
+    if (
+        recorder_inst.warn_on_data_drift
+        and entry.data.model is not None
+        and response is not None
+        and not merged
+    ):
+        _warn_data_drift_once(recorder_inst, entry, project_error)
+
     if not merged:
         return None
     return json.dumps(merged)
+
+
+def _warn_data_drift_once(
+    recorder_inst: Recorder,
+    entry: _registry.RegistryEntry,
+    exc: Exception | None,
+) -> None:
+    """Per-Recorder dedup: one warning per `(kind, reason)`."""
+    reason = "projection_raised" if exc is not None else "shape_mismatch"
+    key = (entry.kind, reason)
+    if key in recorder_inst._drift_warned:
+        return
+    recorder_inst._drift_warned.add(key)
+    model = entry.data.model
+    model_name = model.__name__ if model is not None else "?"
+    detail = f" (projection raised: {exc})" if exc is not None else ""
+    _logger.warning(
+        "recorded[%s]: data_model=%s declared but projection produced empty "
+        "data — response did not match the model%s. To fix: return an "
+        "instance of %s, or call attach({...}) inside the function with "
+        "what you want queryable. Disable this warning with "
+        "configure(warn_on_data_drift=False).",
+        entry.kind, model_name, detail, model_name,
+    )
 
 
 def _run_and_record(
@@ -354,38 +377,3 @@ async def _run_and_record_async(
         current_job.reset(token)
 
 
-def _project_response(kind: str, model: type, response: Any) -> dict[str, Any]:
-    """Generalized response → dict projection driven by adapter `_kind`.
-
-    Returns an empty dict for unprojectable shapes; raises only for hard
-    bugs (the caller catches and falls back to `{}`).
-    """
-    if kind == "dataclass":
-        if is_dataclass(model):
-            names = {f.name for f in dataclasses.fields(model)}
-            if isinstance(response, model):
-                return dataclasses.asdict(response)
-            if isinstance(response, dict):
-                filtered = {k: v for k, v in response.items() if k in names}
-                return dataclasses.asdict(model(**filtered))
-            if dataclasses.is_dataclass(response) and not isinstance(response, type):
-                dumped = dataclasses.asdict(response)
-                return {k: v for k, v in dumped.items() if k in names}
-        return {}
-
-    if kind == "pydantic":
-        # `_kind == "pydantic"` is set by Adapter only when the model
-        # implements `model_validate` + `model_dump`.
-        names = set(getattr(model, "model_fields", {}).keys())
-        if isinstance(response, model):
-            return response.model_dump(mode="json")
-        if isinstance(response, dict):
-            return model.model_validate(response).model_dump(mode="json")  # type: ignore
-        if hasattr(response, "model_dump"):
-            dumped = response.model_dump(mode="json")
-            if names:
-                return {k: v for k, v in dumped.items() if k in names}
-            return dumped
-        return {}
-
-    return {}

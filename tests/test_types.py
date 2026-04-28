@@ -13,7 +13,7 @@ import pytest
 from hypothesis import given
 from hypothesis import strategies as st
 
-from recorded._adapter import Adapter
+from recorded._adapter import make_adapter
 from recorded._types import Job
 
 # --- Pydantic gating ---------------------------------------------------------
@@ -38,7 +38,7 @@ class _OrderView:
 
 def test_dataclass_roundtrip_via_data_slot():
     """Named test: dataclass model survives serialize -> deserialize."""
-    a = Adapter(_OrderView)
+    a = make_adapter(_OrderView)
     src = _OrderView(customer_id=42, total_cents=9900, note="hi")
     raw = a.serialize(src)
     assert raw == {"customer_id": 42, "total_cents": 9900, "note": "hi"}
@@ -49,7 +49,7 @@ def test_dataclass_roundtrip_via_data_slot():
 def test_dataclass_accepts_dict_input_and_validates_by_construction():
     from recorded._errors import SerializationError
 
-    a = Adapter(_OrderView)
+    a = make_adapter(_OrderView)
     raw = a.serialize({"customer_id": 7, "total_cents": 100, "note": None})
     assert raw == {"customer_id": 7, "total_cents": 100, "note": None}
     # missing required field raises at serialize time (dict path).
@@ -58,7 +58,7 @@ def test_dataclass_accepts_dict_input_and_validates_by_construction():
 
 
 def test_passthrough_adapter_stores_dicts_verbatim():
-    a = Adapter()  # model=None
+    a = make_adapter()  # model=None
     src = {"anything": [1, 2, 3], "nested": {"k": "v"}}
     assert a.serialize(src) == src
     assert a.deserialize(src) == src
@@ -74,7 +74,7 @@ def test_passthrough_adapter_dumps_dataclass_instance_to_native():
     `_write_completion` and mark the (successful!) row failed —
     violating DESIGN.md's audit invariant.
     """
-    a = Adapter()
+    a = make_adapter()
     src = _OrderView(customer_id=1, total_cents=200, note="x")
     assert a.serialize(src) == {"customer_id": 1, "total_cents": 200, "note": "x"}
 
@@ -88,7 +88,7 @@ def test_passthrough_adapter_dumps_pydantic_instance_to_native():
         x: int
         y: str
 
-    a = Adapter()
+    a = make_adapter()
     assert a.serialize(M(x=1, y="hi")) == {"x": 1, "y": "hi"}
 
 
@@ -98,7 +98,7 @@ def test_passthrough_adapter_passes_native_values_unchanged():
     The auto-detect only triggers on dataclass / pydantic instances; lists,
     dicts, and primitives remain identity-mapped.
     """
-    a = Adapter()
+    a = make_adapter()
     for v in ({"k": "v"}, [1, 2, 3], "string", 42, 3.14, True, None):
         assert a.serialize(v) == v
 
@@ -110,7 +110,7 @@ def test_unsupported_model_type_raises():
         pass
 
     with pytest.raises(ConfigurationError):
-        Adapter(NotAModel)
+        make_adapter(NotAModel)
 
 
 # --- pydantic ---------------------------------------------------------------
@@ -125,7 +125,7 @@ def test_pydantic_roundtrip_when_installed():
         customer_id: int
         total_cents: int
 
-    a = Adapter(Order)
+    a = make_adapter(Order)
     src = Order(customer_id=42, total_cents=9900)
     raw = a.serialize(src)
     assert raw == {"customer_id": 42, "total_cents": 9900}
@@ -158,7 +158,7 @@ _JSON_VAL = st.recursive(
 
 @given(st.dictionaries(st.text(min_size=1, max_size=8), _JSON_VAL, max_size=5))
 def test_passthrough_adapter_property_roundtrip(d):
-    a = Adapter()
+    a = make_adapter()
     assert a.deserialize(a.serialize(d)) == d
 
 
@@ -178,7 +178,7 @@ class _Bag:
     )
 )
 def test_dataclass_adapter_property_roundtrip(bag):
-    a = Adapter(_Bag)
+    a = make_adapter(_Bag)
     assert a.deserialize(a.serialize(bag)) == bag
 
 
@@ -196,7 +196,7 @@ def test_pydantic_adapter_property_roundtrip(i, s, lst):
         b: str
         c: list[int]
 
-    a = Adapter(Bag)
+    a = make_adapter(Bag)
     src = Bag(a=i, b=s, c=lst)
     assert a.deserialize(a.serialize(src)) == src
 

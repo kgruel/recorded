@@ -14,7 +14,7 @@ import pytest
 
 import recorded
 from recorded import _registry, _storage
-from recorded._adapter import Adapter
+from recorded._adapter import make_adapter
 
 
 @dataclass
@@ -64,8 +64,8 @@ def test_recorded_get_returns_rehydrated_typed_values(default_recorder):
     _registry.register(
         _registry.RegistryEntry(
             kind="orders.place",
-            request=Adapter(_OrderReq),
-            data=Adapter(_OrderView),
+            request=make_adapter(_OrderReq),
+            data=make_adapter(_OrderView),
         )
     )
 

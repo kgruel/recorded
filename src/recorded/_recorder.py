@@ -70,11 +70,16 @@ class Recorder:
         reaper_threshold_s: float = DEFAULT_REAPER_THRESHOLD_S,
         worker_poll_interval_s: float = 0.2,
         join_timeout_s: float = DEFAULT_JOIN_TIMEOUT_S,
+        warn_on_data_drift: bool = True,
     ) -> None:
         self.path = path
         self.reaper_threshold_s = reaper_threshold_s
         self.worker_poll_interval_s = worker_poll_interval_s
         self.join_timeout_s = join_timeout_s
+        self.warn_on_data_drift = warn_on_data_drift
+        # Per-Recorder dedup of projection-drift warnings, keyed by
+        # `(kind, reason)`. Reset only by constructing a fresh Recorder.
+        self._drift_warned: set[tuple[str, str]] = set()
 
         # `_lock` guards Recorder resources: connection lifecycle (`_conn`,
         # `_closed`) and worker lifecycle (`_worker`). Held briefly; never
@@ -619,6 +624,7 @@ def configure(
     reaper_threshold_s: float | None = None,
     worker_poll_interval_s: float | None = None,
     join_timeout_s: float | None = None,
+    warn_on_data_drift: bool | None = None,
 ) -> Recorder:
     """Configure the module-level default `Recorder`. Configure-once.
 
@@ -652,6 +658,8 @@ def configure(
             kwargs["worker_poll_interval_s"] = worker_poll_interval_s
         if join_timeout_s is not None:
             kwargs["join_timeout_s"] = join_timeout_s
+        if warn_on_data_drift is not None:
+            kwargs["warn_on_data_drift"] = warn_on_data_drift
         r = Recorder(**kwargs)
         _default = r
         # Only the *configured* default registers atexit — direct

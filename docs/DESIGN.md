@@ -75,6 +75,8 @@ The bare call returns whatever the wrapped function returns — the decorator is
 
 `response` is **always full-fidelity by default**. Typing it is opt-in lossiness. `data` is the place to put the small queryable projection. The audit invariant — "the raw response is always recorded" — holds unless the caller explicitly overrides it.
 
+Auto-projection from `response` into `data` requires the response to be either an instance of the declared `data` model OR a dict that validates against it. Anything else (a different model with overlapping field names, a primitive, an unrelated dict) falls through to an empty projection — `data_json` is left to whatever `attach()` populated. When projection doesn't fire on a declared `data` slot, a deduped warning surfaces the drift on the `recorded` logger (one warning per `(kind, reason)` per Recorder); disable via `configure(warn_on_data_drift=False)` or `Recorder(warn_on_data_drift=False)`. The fix is usually one of: return an instance of the `data` model, or call `attach({...})` with the queryable slice you want.
+
 For FastAPI users: a small optional helper `recorded.fastapi.capture_request(request)` returns a serializable envelope (method, path, query, headers, body) suitable for the request slot. `kind` stays as the function-level identifier; transport metadata belongs in the payload, not the kind name.
 
 ### Call-site parameters

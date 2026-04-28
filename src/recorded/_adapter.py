@@ -6,8 +6,9 @@ Three tiers, in priority order:
 2. Pydantic v2 — auto-detected; uses `model_validate` / `model_dump`.
 3. plain dict / primitive — accepted as-is, no validation.
 
-A single `Adapter` class wraps one of these strategies. `model=None` means
-"no model registered for this slot" — the value is passed through unchanged.
+`Adapter` is an ABC with one subclass per tier. Construct via
+`make_adapter(model)` rather than directly. `model=None` means "no model
+registered for this slot" — the value is passed through unchanged.
 
 Pydantic is detected via duck-typing (`model_validate` + `model_dump` attrs).
 We do not import pydantic; we rely on the user-supplied class carrying the
@@ -17,6 +18,7 @@ v2 protocol.
 from __future__ import annotations
 
 import dataclasses
+from abc import ABC, abstractmethod
 from typing import Any
 
 from ._errors import ConfigurationError, SerializationError
@@ -56,67 +58,116 @@ def _to_native(value: Any) -> Any:
     return value
 
 
-class Adapter:
-    """Serialize values *to* JSON-compatible primitives, deserialize back.
+class Adapter(ABC):
+    """Serialize/deserialize/project values for a typed slot.
 
-    `serialize(value)` accepts:
-        - a model instance — validated by construction, dumped to dict
-        - a dict — round-tripped through the model to validate (raises if invalid)
-        - None — returned as None
-
-    `deserialize(raw)` rebuilds a model instance from the stored dict.
-    With `model=None`, both methods are pass-through.
+    Subclasses correspond to the supported model kinds. Construct via
+    `make_adapter(model)` rather than directly.
     """
 
-    __slots__ = ("model", "_kind")
+    model: type | None
 
-    def __init__(self, model: type | None = None) -> None:
-        self.model = model
-        if model is None:
-            self._kind = "passthrough"
-        elif _is_pydantic_model(model):
-            self._kind = "pydantic"
-        elif _is_dataclass_type(model):
-            self._kind = "dataclass"
-        else:
-            raise ConfigurationError(
-                f"Unsupported model type: {model!r}. "
-                "Expected a dataclass, a Pydantic v2 BaseModel, or None."
-            )
+    @abstractmethod
+    def serialize(self, value: Any) -> Any: ...
+
+    @abstractmethod
+    def deserialize(self, raw: Any) -> Any: ...
+
+    @abstractmethod
+    def project(self, response: Any) -> dict[str, Any]:
+        """Best-effort response → queryable-data dict.
+
+        Returns `{}` when the response shape doesn't match the slot's
+        model. Raising is reserved for hard bugs; the caller catches and
+        falls back to `{}` (with a warning if `warn_on_data_drift` is on).
+        """
+
+
+class _PassthroughAdapter(Adapter):
+    """No model registered — pass values through, render natively for storage."""
+
+    model: type | None = None
 
     def serialize(self, value: Any) -> Any:
         if value is None:
             return None
-        if self._kind == "passthrough":
-            return _to_native(value)
-        if self._kind == "pydantic":
-            try:
-                if isinstance(value, self.model):  # type: ignore[arg-type]
-                    return value.model_dump(mode="json")
-                # validate-then-dump: ensures stored shape is canonical
-                return self.model.model_validate(value).model_dump(mode="json")  # type: ignore[union-attr]
-            except Exception as exc:
-                raise SerializationError(
-                    f"Cannot serialize {type(value).__name__} into "
-                    f"pydantic slot {self.model.__name__}: {exc}",  # type: ignore[union-attr]
-                    model=self.model,
-                    value=value,
-                ) from exc
-        # dataclass
-        if isinstance(value, self.model):  # type: ignore[arg-type]
+        return _to_native(value)
+
+    def deserialize(self, raw: Any) -> Any:
+        return raw
+
+    def project(self, response: Any) -> dict[str, Any]:
+        return {}
+
+
+class _PydanticAdapter(Adapter):
+    """Pydantic v2 (duck-typed) — `model_validate` / `model_dump`.
+
+    `model` is typed as `type[Any]` rather than `type` because the v2
+    protocol attributes (`model_validate`, `model_dump`) are on the
+    user's class but not on the bare `type` metaclass — we don't import
+    pydantic, so we widen to `type[Any]` to let attribute access through.
+    """
+
+    model: type[Any]
+
+    def __init__(self, model: type) -> None:
+        self.model = model
+
+    def serialize(self, value: Any) -> Any:
+        if value is None:
+            return None
+        try:
+            if isinstance(value, self.model):
+                return value.model_dump(mode="json")
+            # validate-then-dump: ensures stored shape is canonical
+            return self.model.model_validate(value).model_dump(mode="json")
+        except Exception as exc:
+            raise SerializationError(
+                f"Cannot serialize {type(value).__name__} into "
+                f"pydantic slot {self.model.__name__}: {exc}",
+                model=self.model,
+                value=value,
+            ) from exc
+
+    def deserialize(self, raw: Any) -> Any:
+        if raw is None:
+            return None
+        return self.model.model_validate(raw)
+
+    def project(self, response: Any) -> dict[str, Any]:
+        if isinstance(response, self.model):
+            return response.model_dump(mode="json")
+        if isinstance(response, dict):
+            return self.model.model_validate(response).model_dump(mode="json")
+        return {}
+
+
+class _DataclassAdapter(Adapter):
+    """stdlib dataclass — `Model(**dict)` / `dataclasses.asdict`."""
+
+    model: type
+
+    def __init__(self, model: type) -> None:
+        self.model = model
+
+    def serialize(self, value: Any) -> Any:
+        if value is None:
+            return None
+        if isinstance(value, self.model):
             return dataclasses.asdict(value)
         if isinstance(value, dict):
             try:
-                return dataclasses.asdict(self.model(**value))  # type: ignore[misc]
+                return dataclasses.asdict(self.model(**value))
             except TypeError as exc:
                 raise SerializationError(
-                    f"Cannot construct {self.model.__name__} from dict: {exc}",  # type: ignore[union-attr]
+                    f"Cannot construct {self.model.__name__} from dict: {exc}",
                     model=self.model,
                     value=value,
                 ) from exc
         raise SerializationError(
             f"Cannot serialize {type(value).__name__} into "
-            f"dataclass slot {self.model.__name__}",  # type: ignore[union-attr]
+            f"dataclass slot {self.model.__name__}",
             model=self.model,
             value=value,
         )
@@ -124,9 +175,33 @@ class Adapter:
     def deserialize(self, raw: Any) -> Any:
         if raw is None:
             return None
-        if self._kind == "passthrough":
-            return raw
-        if self._kind == "pydantic":
-            return self.model.model_validate(raw)  # type: ignore[union-attr]
-        # dataclass
-        return self.model(**raw)  # type: ignore[misc]
+        return self.model(**raw)
+
+    def project(self, response: Any) -> dict[str, Any]:
+        if isinstance(response, self.model):
+            return dataclasses.asdict(response)
+        if isinstance(response, dict):
+            names = {f.name for f in dataclasses.fields(self.model)}
+            filtered = {k: v for k, v in response.items() if k in names}
+            return dataclasses.asdict(self.model(**filtered))
+        return {}
+
+
+def make_adapter(model: type | None = None) -> Adapter:
+    """Pick the right adapter for the model type.
+
+    - `model=None` → `_PassthroughAdapter()`
+    - pydantic v2-shaped (duck-typed) → `_PydanticAdapter(model)`
+    - dataclass type → `_DataclassAdapter(model)`
+    - anything else → `ConfigurationError`
+    """
+    if model is None:
+        return _PassthroughAdapter()
+    if _is_pydantic_model(model):
+        return _PydanticAdapter(model)
+    if _is_dataclass_type(model):
+        return _DataclassAdapter(model)
+    raise ConfigurationError(
+        f"Unsupported model type: {model!r}. "
+        "Expected a dataclass, a Pydantic v2 BaseModel, or None."
+    )

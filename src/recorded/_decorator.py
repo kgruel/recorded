@@ -24,7 +24,7 @@ from collections.abc import Callable
 from typing import Any, Protocol, cast, overload
 
 from . import _registry, _storage
-from ._adapter import Adapter
+from ._adapter import make_adapter
 from ._errors import (
     IdempotencyRaceError,
     JoinedSiblingFailedError,
@@ -101,10 +101,10 @@ def recorder(
 
         entry = _registry.RegistryEntry(
             kind=actual_kind,
-            request=Adapter(request),
-            response=Adapter(response),
-            data=Adapter(data),
-            error=Adapter(error),
+            request=make_adapter(request),
+            response=make_adapter(response),
+            data=make_adapter(data),
+            error=make_adapter(error),
             fn=fn,
             auto_kind=auto_kind,
         )

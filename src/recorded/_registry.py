@@ -16,16 +16,16 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
-from ._adapter import Adapter
+from ._adapter import Adapter, make_adapter
 
 
 @dataclass
 class RegistryEntry:
     kind: str
-    request: Adapter = field(default_factory=Adapter)
-    response: Adapter = field(default_factory=Adapter)
-    data: Adapter = field(default_factory=Adapter)
-    error: Adapter = field(default_factory=Adapter)
+    request: Adapter = field(default_factory=make_adapter)
+    response: Adapter = field(default_factory=make_adapter)
+    data: Adapter = field(default_factory=make_adapter)
+    error: Adapter = field(default_factory=make_adapter)
     fn: Callable[..., Any] | None = None  # set by decorator (phase 1.2)
     auto_kind: bool = False  # True when kind was auto-derived from fn name
 
