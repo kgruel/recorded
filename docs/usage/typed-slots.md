@@ -187,6 +187,48 @@ last-write-wins.
 intentional — removing `@recorder` from a function shouldn't require also
 deleting every `attach()` call in its body.
 
+### `attach()` under a typed `data=` slot
+
+When the active `@recorder(data=Model)` declares a typed data slot,
+`attach(key, value)` validates `key` against the model's declared fields.
+Unknown keys raise `AttachKeyError` **at the `attach()` call site**, before
+any DB write:
+
+```python
+class OrderView(BaseModel):
+    order_id: str
+    total: float
+
+@recorder(kind="orders.place", data=OrderView)
+def place_order(req):
+    attach("order_id", "o-1")           # OK — declared
+    attach("customer", "c-7")           # AttachKeyError: not declared on OrderView
+    return broker.place(req)
+```
+
+The error message names the offending key and lists the model's declared
+fields. Bare `@recorder` (no `data=Model`) keeps the free-form passthrough
+behavior: any key, any value, lands in `data_json` as a dict. The bare
+form is the experimentation-friendly escape hatch — once you observe the
+keys you actually use, declare a `data=Model` and the tool starts
+enforcing.
+
+**Aliased fields use canonical names.** With pydantic `Field(alias=...)`,
+the declared field set is the canonical names (what `model_dump` produces
+and `model_validate` reads back). Attaching by alias raises — the alias
+key would land in `data_json` at a position the rehydration path cannot
+reach.
+
+**Why fail at the call site rather than at write time:** a typed
+`data=Model` row whose `data_json` contains undeclared keys is unreadable
+through the public read API — `_DataclassAdapter.deserialize` and
+`extra="forbid"` pydantic models both raise on rehydration. The library
+preserves wrap-transparency: rows written via the public write path must
+round-trip through the public read path. Catching at `attach()` makes
+the misuse actionable (the stack trace points at the offending line in
+your code) rather than a latent crash that only surfaces when something
+later reads the row.
+
 ## `attach_error()` — structured error payloads
 
 `attach_error()` writes to the `error` slot on the failure path:

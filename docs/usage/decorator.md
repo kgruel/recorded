@@ -92,6 +92,12 @@ function on the threadpool via `asyncio.to_thread` so it doesn't block the
 loop. ContextVars (and therefore `attach()` / `attach_error()`) propagate
 through `to_thread`.
 
+`attach()` has a typed-vs-bare contract: under `@recorder(data=Model)`, only
+keys declared on the model are allowed (unknown keys raise `AttachKeyError`
+at the call site); under bare `@recorder`, any key works. See
+[typed-slots → attach() under a typed `data=` slot](typed-slots.md#attach-under-a-typed-data-slot)
+for the rationale and migration path.
+
 `.sync()` from inside a running event loop raises `SyncInLoopError` — running
 `asyncio.run` while a loop is already running would deadlock or silently
 misbehave. Use `await fn(...)` instead.

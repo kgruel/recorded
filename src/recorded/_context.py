@@ -18,6 +18,8 @@ from contextvars import ContextVar
 from dataclasses import dataclass, field
 from typing import Any
 
+from ._errors import AttachKeyError
+
 _UNSET: Any = object()
 
 
@@ -36,6 +38,7 @@ class JobContext:
     job_id: str
     kind: str
     recorder: Any  # forward ref to Recorder; avoid circular import
+    entry: Any  # forward ref to _registry.RegistryEntry; avoid circular import
     buffer: dict[str, Any] = field(default_factory=dict)
     error_buffer: Any = field(default=_UNSET)
 
@@ -52,10 +55,26 @@ def attach(key: str, value: Any, *, flush: bool = False) -> None:
     Outside a recorded context, `attach()` is a silent no-op. Removing
     `@recorder` from a function should not require also removing all the
     `attach()` calls in its body.
+
+    When the active recorder declares a typed `data=Model`, `key` must
+    be a declared field on that model — otherwise the row would write
+    successfully and then crash the read path's rehydration. This raises
+    `AttachKeyError` at the call site rather than silently writing an
+    unreachable key. Bare `@recorder` (no `data=Model`) keeps the
+    free-form passthrough behavior.
     """
     ctx = current_job.get()
     if ctx is None:
         return
+    if ctx.entry is not None:
+        declared = ctx.entry.data.field_names
+        if declared is not None and key not in declared:
+            raise AttachKeyError(
+                kind=ctx.kind,
+                model=ctx.entry.data.model,
+                key=key,
+                declared=declared,
+            )
     ctx.buffer[key] = value
     if flush:
         ctx.recorder._flush_attach(ctx.job_id, key, value)

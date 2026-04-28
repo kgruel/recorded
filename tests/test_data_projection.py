@@ -162,7 +162,18 @@ def test_drift_warning_silenced_when_attach_populates(default_recorder, drift_ca
     """attach() populates data → merged is non-empty → no drift warning."""
     from recorded import attach
 
-    @recorder(kind="t.drift.attach", data=OrderViewPyd)
+    # A test-local model that declares `customer` as an optional field.
+    # The test asserts "attach as the *sole* populator silences the drift
+    # warning"; using a key that the response could *also* project (e.g.
+    # OrderViewPyd's order_id) would let projection contribute too,
+    # defeating the assertion. Declaring `customer` keeps attach() the
+    # only populator while satisfying the typed-data attach contract.
+    class OrderViewWithCustomer(BaseModel):
+        order_id: str
+        total: float
+        customer: str | None = None
+
+    @recorder(kind="t.drift.attach", data=OrderViewWithCustomer)
     def fn(req):
         attach("customer", "c1")
         return 42  # would normally drift
@@ -323,11 +334,19 @@ def test_attach_and_projection_both_populate_last_write_wins(default_recorder, d
     """Both attach and projection populate; conflict rule: attach wins (last-write)."""
     from recorded import attach
 
-    @recorder(kind="t.merge", data=OrderViewPyd)
+    # Test-local model declares `separate_key` so the non-colliding
+    # attach satisfies the typed-data attach contract while still
+    # exercising the "merge two sources" branch the test name promises.
+    class OrderViewWithSeparate(BaseModel):
+        order_id: str
+        total: float
+        separate_key: str | None = None
+
+    @recorder(kind="t.merge", data=OrderViewWithSeparate)
     def fn(req):
         attach("order_id", "from_attach")  # collides with projection key
         attach("separate_key", "x")  # non-colliding
-        return OrderViewPyd(order_id="from_response", total=42.0)
+        return OrderViewWithSeparate(order_id="from_response", total=42.0)
 
     fn({})
 

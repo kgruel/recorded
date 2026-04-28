@@ -6,7 +6,7 @@ import asyncio
 
 import pytest
 
-from recorded import recorder
+from recorded import attach, recorder
 from recorded._errors import ConfigurationError
 
 # --- call-time validation of key= against auto-derived kind ---------------
@@ -259,6 +259,67 @@ async def test_typed_instance_join_preserves_type_in_process(default_recorder, m
     assert isinstance(joiner_result, OrderReply)
     assert joiner_result.order_id == "order-A"
     assert joiner_result.amount == 42
+
+
+# --- bug #4: data column round-trips for an idempotency joiner ------------
+
+
+@pytest.mark.asyncio
+async def test_typed_data_round_trips_for_idempotency_joiner(default_recorder, monkeypatch):
+    """Round-trip guarantee for the data column under in-process
+    idempotency joining.
+
+    A typed `data=Model` row populated via `attach()` of a declared key
+    is rehydrated cleanly via the public read API — both the leader's
+    write and the joiner's read see the same shape. Pre-fix this would
+    have either raised at the read path (undeclared key) or silently
+    dropped extras; the typed-data attach contract turns both into
+    "declared key, clean rehydration."
+    """
+    from dataclasses import dataclass
+
+    @dataclass
+    class OrderView:
+        order_id: str
+        note: str | None = None
+
+    started = asyncio.Event()
+    proceed = asyncio.Event()
+
+    @recorder(kind="t.idem.data_round_trip", data=OrderView)
+    async def place_order(req):
+        started.set()
+        await proceed.wait()
+        attach("note", "fast lane")
+        return OrderView(order_id=f"order-{req}")
+
+    subscribed = asyncio.Event()
+    loop = asyncio.get_running_loop()
+
+    def on_subscribe(_jid: str) -> None:
+        loop.call_soon_threadsafe(subscribed.set)
+
+    monkeypatch.setattr(default_recorder, "_for_testing_subscribe_callback", on_subscribe)
+
+    leader_task = asyncio.create_task(place_order("A", key="kk-data"))
+    await started.wait()
+
+    joiner_task = asyncio.create_task(place_order("A", key="kk-data"))
+    await subscribed.wait()
+    proceed.set()
+    await asyncio.gather(leader_task, joiner_task)
+
+    # Single row, both writers landed on the same one.
+    rows = default_recorder.last(2, kind="t.idem.data_round_trip")
+    assert len(rows) == 1
+    job = rows[0]
+
+    # Read-path rehydrates the data column to an OrderView instance with
+    # the attached `note` populated — pre-fix this branch would have
+    # raised TypeError on an undeclared key. Now it round-trips.
+    assert isinstance(job.data, OrderView)
+    assert job.data.order_id == "order-A"
+    assert job.data.note == "fast lane"
 
 
 # --- live-result cache hygiene (regression tests for the leak fix) ----------

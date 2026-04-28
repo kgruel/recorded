@@ -63,9 +63,16 @@ class Adapter(ABC):
 
     Subclasses correspond to the supported model kinds. Construct via
     `make_adapter(model)` rather than directly.
+
+    `field_names` is the set of declared keys for this slot's model;
+    `None` means "no schema, accept any key" (the passthrough case).
+    `attach()` consults this to refuse undeclared keys at the call site
+    against typed `data=` slots — declared keys are exactly the keys
+    the rehydration path can reach.
     """
 
     model: type | None
+    field_names: frozenset[str] | None
 
     @abstractmethod
     def serialize(self, value: Any) -> Any: ...
@@ -87,6 +94,7 @@ class _PassthroughAdapter(Adapter):
     """No model registered — pass values through, render natively for storage."""
 
     model: type | None = None
+    field_names: frozenset[str] | None = None
 
     def serialize(self, value: Any) -> Any:
         if value is None:
@@ -110,9 +118,18 @@ class _PydanticAdapter(Adapter):
     """
 
     model: type[Any]
+    field_names: frozenset[str]
 
     def __init__(self, model: type) -> None:
         self.model = model
+        # `model_fields.keys()` returns canonical field names (not
+        # aliases). That is the right set for `attach()` validation
+        # because the stored shape is keyed by canonical names —
+        # an attach by alias would land in a key the rehydration path
+        # cannot reach. Access via `self.model` (typed `type[Any]`) so
+        # ty doesn't complain about `model_fields` not being on bare
+        # `type` — same dodge as `model_validate` / `model_dump` below.
+        self.field_names = frozenset(self.model.model_fields.keys())
 
     def serialize(self, value: Any) -> Any:
         if value is None:
@@ -147,9 +164,11 @@ class _DataclassAdapter(Adapter):
     """stdlib dataclass — `Model(**dict)` / `dataclasses.asdict`."""
 
     model: type
+    field_names: frozenset[str]
 
     def __init__(self, model: type) -> None:
         self.model = model
+        self.field_names = frozenset(f.name for f in dataclasses.fields(model))
 
     def serialize(self, value: Any) -> Any:
         if value is None:
@@ -180,8 +199,7 @@ class _DataclassAdapter(Adapter):
         if isinstance(response, self.model):
             return dataclasses.asdict(response)
         if isinstance(response, dict):
-            names = {f.name for f in dataclasses.fields(self.model)}
-            filtered = {k: v for k, v in response.items() if k in names}
+            filtered = {k: v for k, v in response.items() if k in self.field_names}
             return dataclasses.asdict(self.model(**filtered))
         return {}
 

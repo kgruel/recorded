@@ -21,6 +21,7 @@ from typing import Any
 from ._context import attach, attach_error
 from ._decorator import recorder
 from ._errors import (
+    AttachKeyError,
     ConfigurationError,
     IdempotencyError,
     IdempotencyRaceError,
@@ -104,6 +105,7 @@ __all__ = [
     "RecordedError",
     "UsageError",
     "IdempotencyError",
+    "AttachKeyError",
     "ConfigurationError",
     "RecorderClosedError",
     "SerializationError",

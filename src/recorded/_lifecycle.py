@@ -296,7 +296,7 @@ def _run_and_record(
     failure, so the decorated callable can't either. Recording failures
     mark the row failed and emit a warning via `recorded` logger.
     """
-    ctx = JobContext(job_id=job_id, kind=entry.kind, recorder=recorder_inst)
+    ctx = JobContext(job_id=job_id, kind=entry.kind, recorder=recorder_inst, entry=entry)
     token = current_job.set(ctx)
     try:
         try:
@@ -344,7 +344,7 @@ async def _run_and_record_async(
     `CancelledError` (BaseException, not Exception) is not caught — it
     propagates so the caller's task-cancellation protocol stays intact.
     """
-    ctx = JobContext(job_id=job_id, kind=entry.kind, recorder=recorder_inst)
+    ctx = JobContext(job_id=job_id, kind=entry.kind, recorder=recorder_inst, entry=entry)
     token = current_job.set(ctx)
     try:
         try:

@@ -256,6 +256,54 @@ broken on the first two and required custom propagation through
 > that removing `@recorder` not force the caller to delete their
 > `attach()` calls.
 
+## The typed-slot contract for `attach()`
+
+**`@recorder(data=Model)` makes the data slot a contract, not a
+suggestion.** Under a typed data slot, `attach(key, value)` validates
+`key` against the model's declared fields and raises `AttachKeyError`
+at the call site for unknown keys. Bare `@recorder` (no `data=Model`)
+keeps the free-form passthrough — the experimentation escape hatch.
+
+Why this is wrap-transparency, not a separate principle:
+
+- A row written via the public write path must be readable through the
+  public read path. Pre-fix, `@recorder(data=Model)` plus
+  `attach("undeclared", v)` wrote a `data_json` document the read path
+  could not rehydrate (`_DataclassAdapter.deserialize` raised
+  `TypeError`; pydantic `extra="forbid"` raised; pydantic default
+  silently dropped the key, losing data the writer intended to keep).
+  The asymmetry between successful write and failed read directly
+  violates the invariant.
+- Catching at `attach()` rather than at completion serialization is the
+  difference between "stack trace points at the offending line" and
+  "stack trace points at a serializer five frames deep." Highest-
+  actionability error the library can emit. `flush=True` write-throughs
+  must validate at the same point — otherwise the flush would land an
+  unreachable key.
+
+Why this dissolves rather than adds surface:
+
+- The check is a property of the typed slot itself. `Adapter` already
+  knows its model; surfacing `field_names` (with `None` as the
+  passthrough sentinel) is one attribute, not a new subsystem. The
+  inline `dataclasses.fields(...)` walk in `_DataclassAdapter.project`
+  also dissolves into the same accessor — net code is smaller.
+- The bare-recorder escape hatch preserves the
+  experimentation-friendly path. Continuation arc: bare → repeated
+  keys observed → declare a `data=Model` → tool starts enforcing →
+  attach errors point at exactly which keys to declare. Schema grows
+  out of call sites; you don't pay the cost until you want the
+  guarantee.
+
+The `error=Model` slot stays under different rules: `attach_error()`
+is full-replace, not key-merged, and the recording layer falls back to
+`{type, message}` when the typed adapter rejects the payload. Raising
+on adapter rejection would itself violate wrap-transparency by
+replacing the user's exception with one the bare function couldn't
+produce. The data-slot rule and the error-slot rule are both
+consequences of the same principle; their mechanics differ because
+the slots' write semantics differ.
+
 ## The wait primitive
 
 **One mechanism, four surfaces.** `JobHandle.wait()`,

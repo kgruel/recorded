@@ -81,6 +81,39 @@ class RecorderClosedError(UsageError):
     """An operation was attempted on a Recorder whose `shutdown()` has run."""
 
 
+class AttachKeyError(UsageError):
+    """`attach(key, ...)` against a typed `data=Model` slot used a key
+    the model does not declare.
+
+    Raised at the `attach()` call site, before any DB write. Either
+    declare the key on the model, or drop `data=Model` from the
+    decorator to use the bare passthrough data slot for free-form
+    annotations.
+    """
+
+    def __init__(
+        self,
+        *,
+        kind: str,
+        model: type,
+        key: str,
+        declared: frozenset[str],
+    ) -> None:
+        self.kind = kind
+        self.model = model
+        self.key = key
+        self.declared = declared
+        sorted_declared = sorted(declared)
+        super().__init__(
+            f"attach({key!r}, ...) on kind={kind!r}: "
+            f"{key!r} is not declared on data model {model.__name__}. "
+            f"Declared fields: {sorted_declared}. "
+            f"Either add {key!r} to {model.__name__}, or drop "
+            f"data={model.__name__} from the decorator to use the "
+            f"free-form passthrough data slot."
+        )
+
+
 class SerializationError(UsageError):
     """The recorder couldn't serialize a value into a slot.
 
