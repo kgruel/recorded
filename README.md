@@ -1,8 +1,17 @@
 # recorded
 
-`@recorder` turns each function call into a queryable typed row. Four
-properties together — that's the library, and the reason it isn't a
-logging tool you already have:
+Wrap any computation you want **queryable and replayable**. `@recorder`
+makes the call's arguments, return value, and any projected fields a
+typed row in SQLite. From there: query the recorded space as a typed
+table, replay rows by idempotency key, render any row as LLM context.
+
+It works for HTTP calls, LLM turns, and broker requests — but the
+general pattern is *the result of a function is data you can query
+later.* Scanners, feature pipelines, derived metrics, scoring loops —
+anywhere the row IS the result.
+
+Four properties together — that's the library, and the reason it isn't
+a logging tool you already have:
 
 - **Transparent at the call site.** The wrapped function still returns
   its natural value; adding or removing `@recorder` is a safe edit at
@@ -13,20 +22,33 @@ logging tool you already have:
 - **Projected, not just logged.** Declare `data=Model` and that slot
   becomes a queryable index over the full payload — the wide response
   stays on disk faithfully; `data` is the slice you'll filter on.
-- **Read API shaped for LLMs.** Pull rows back as typed objects,
-  filter by `data` fields, or render any row as prompt-ready context
-  with `Job.to_prompt()`.
+- **Read API shaped for analysis and LLMs.** Pull rows back as typed
+  objects, filter by `data` fields, or render any row as prompt-ready
+  context with `Job.to_prompt()`.
 
 ```python
-from recorded import recorder, last
+from recorded import recorder, query
+from pydantic import BaseModel
 
-@recorder(kind="orders.place")
-def place_order(symbol: str, qty: int) -> dict:
-    return broker.place_order(symbol=symbol, qty=qty)
+class FileMetrics(BaseModel):
+    path: str
+    loc: int
+    has_async: bool
 
-place_order("AAPL", 100)            # runs as normal — but recorded
-print(last(1)[0].response)          # {'order_id': 'ord-9281', ...}
+@recorder(kind="scan.file", data=FileMetrics)
+def measure(path: str) -> FileMetrics:
+    ...   # parse, count, classify — pure computation
+
+for py in pathlib.Path("src").rglob("*.py"):
+    measure(str(py), key=str(py))   # each call is a typed row
+
+# Now the recorded space is queryable — no recompute:
+for job in query(kind="scan.file", where_data={"has_async": True}):
+    print(job.data.loc, job.data.path)
 ```
+
+Same shape works for I/O wrappers — swap `measure(path)` for
+`fetch(url)` or `place_order(req)` and the rest is identical.
 
 The substrate is one SQLite file (`jobs.db`), four slots per row, a
 three-write lifecycle. The bare-call path above is what most apps run;
@@ -147,8 +169,9 @@ Or jump in by need — see the [usage guide index](docs/usage/README.md).
 **Architecture:** [docs/HOW.md](docs/HOW.md) is the contributor
 tour; [docs/WHY.md](docs/WHY.md) is the authoritative spec.
 
-**Runnable examples:** [docs/examples/](docs/examples/) — LLM-CLI replay,
-FastAPI service, batch HTTP consumer.
+**Runnable examples:** [docs/examples/](docs/examples/) — codebase
+scanner, LLM-CLI replay, FastAPI service, batch HTTP consumer, fiscal
+snapshot.
 
 ---
 

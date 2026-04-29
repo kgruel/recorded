@@ -1,7 +1,12 @@
 # Examples
 
-Three runnable scripts. Each is self-contained — `pip install`, run,
-watch the rows land in `./jobs.db`.
+Five runnable scripts. Each is self-contained — `pip install`, run,
+watch the rows land in `./jobs.db` (or the example's own DB).
+
+If `recorded` reads to you as "for I/O / job-queue territory only,"
+start with **`05_codebase_scan.py`** — it's the example where the
+wrapped function is pure computation, and the recorded table is the
+result space you query.
 
 ## `01_claude_turns.py` — record LLM-CLI turns
 
@@ -74,4 +79,23 @@ the read API. No inline comments — read the code.
 pip install recorded httpx pydantic
 python docs/examples/04_treasury_snapshot.py
 python docs/examples/04_treasury_snapshot.py   # second run — zero HTTP
+```
+
+## `05_codebase_scan.py` — pure analysis, no I/O
+
+Walks `src/recorded/` itself, parses each `.py` file's AST, projects
+four metrics into a typed `data=` slot. Then queries the recorded
+space — "files with async, ranked by LOC" is read out of SQLite, no
+recompute. `key=path:mtime` makes the sweep incremental: re-run after
+editing one file and only that file is re-measured.
+
+Shows: the wrapped function as **pure computation** rather than I/O.
+The recorded table is the result space; the read API is the analytical
+surface. This is the example to read first if the others made the
+library feel like ops/job-queue territory.
+
+```bash
+pip install recorded pydantic
+python docs/examples/05_codebase_scan.py
+python docs/examples/05_codebase_scan.py   # second run — zero parse work
 ```
