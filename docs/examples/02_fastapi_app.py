@@ -23,7 +23,7 @@ import.
 
 Setup (60 seconds):
     pip install recorded fastapi uvicorn httpx pydantic
-    cd /path/to/sqlite-api-job
+    cd /path/to/recorded
     uvicorn docs.examples.02_fastapi_app:app --reload --port 8000
 
 Try it:

@@ -8,7 +8,7 @@ and feed them into a follow-up question. The library demos itself.
 Setup (60 seconds):
     pip install recorded
     # have `claude` (or your preferred CLI) installed and logged in
-    cd /path/to/sqlite-api-job        # so WHY.md is readable
+    cd /path/to/recorded        # so WHY.md is readable
     python docs/examples/01_claude_turns.py
 
 What this script does, in three beats:
