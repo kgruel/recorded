@@ -20,6 +20,7 @@ import atexit
 import concurrent.futures
 import json
 import logging
+import os
 import sqlite3
 import threading
 from collections.abc import Callable, Iterator, Sequence
@@ -158,6 +159,56 @@ class Recorder:
     # sites is out of Stream A's scope.
     def connection(self) -> sqlite3.Connection:
         return self._connection()
+
+    def health(self) -> dict[str, Any]:
+        """Return a fresh snapshot of recorder-store health signals.
+
+        Fields:
+        - `db_size_mb`: current on-disk size of this Recorder's SQLite file.
+        - `total_rows`: total count of rows in `jobs` (includes `_recorded.*`).
+        - `oldest_row`: earliest `submitted_at` timestamp, or `None` if empty.
+        - `newest_row`: latest `submitted_at` timestamp, or `None` if empty.
+        - `rows_last_hour`: rows with `submitted_at` in the last hour.
+        - `last_failed_at`: most recent failed row `submitted_at`, or `None`.
+        - `leader_running`: liveness of the leader heartbeat.
+
+        `leader_running` is included here because `.submit()` durability depends
+        on it; exposing both row-shape and worker-liveness signals in one call
+        keeps substrate health externally observable via a single probe.
+        """
+        conn = self._connection()
+        with self._write_lock:
+            total_rows, oldest_row, newest_row, rows_last_hour, last_failed_at = conn.execute(
+                """
+                SELECT
+                    COUNT(*) AS total_rows,
+                    MIN(submitted_at) AS oldest_row,
+                    MAX(submitted_at) AS newest_row,
+                    SUM(CASE WHEN submitted_at >= ? THEN 1 ELSE 0 END) AS rows_last_hour,
+                    MAX(CASE WHEN status = ? THEN submitted_at ELSE NULL END) AS last_failed_at
+                FROM jobs
+                """,
+                (
+                    _storage.format_iso(datetime.now(timezone.utc) - timedelta(hours=1)),
+                    _storage.STATUS_FAILED,
+                ),
+            ).fetchone()
+
+        db_size_mb = 0.0
+        try:
+            db_size_mb = round(os.path.getsize(self.path) / (1024 * 1024), 6)
+        except OSError:
+            pass
+
+        return {
+            "db_size_mb": db_size_mb,
+            "total_rows": int(total_rows),
+            "oldest_row": oldest_row,
+            "newest_row": newest_row,
+            "rows_last_hour": int(rows_last_hour or 0),
+            "last_failed_at": last_failed_at,
+            "leader_running": self.is_leader_running(),
+        }
 
     def _execute(self, sql: str, params: tuple = ()) -> sqlite3.Cursor:
         conn = self._connection()

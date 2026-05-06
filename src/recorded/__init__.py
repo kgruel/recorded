@@ -87,6 +87,14 @@ def connection() -> sqlite3.Connection:
     return get_default().connection()
 
 
+def health() -> dict[str, Any]:
+    """Store-health snapshot for the default Recorder.
+
+    See `Recorder.health()` for field definitions.
+    """
+    return get_default().health()
+
+
 __all__ = [
     # Core API
     "Recorder",
@@ -96,6 +104,7 @@ __all__ = [
     "attach_error",
     "configure",
     "connection",
+    "health",
     "get",
     "last",
     "query",

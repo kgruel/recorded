@@ -202,3 +202,5 @@ CREATE TABLE jobs (
 
 `duration_ms` is a Python property on the `Job` dataclass, **not** a stored
 column — compute it from `started_at` / `completed_at` if you want it in SQL.
+
+`recorded.health()` is the quick substrate observability probe: it reports DB size, row volume, recency windows, and latest failure timing from the underlying `jobs` store in one fresh read. The point is operational posture, not app semantics: when this snapshot drifts (growth spikes, stale newest row, recent failures), you can investigate early using `recorded.connection()` and raw SQL without needing internal library state.
