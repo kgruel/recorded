@@ -160,6 +160,7 @@ skip to the one you need.
 | [usage/idempotency.md](docs/usage/idempotency.md) | `key=`, `retry_failed`, the partial-unique-index trick |
 | [usage/typed-slots.md](docs/usage/typed-slots.md) | the four slots, `attach()`, `attach_error()` |
 | [usage/queries.md](docs/usage/queries.md) | `recorded.query(...)`, raw SQL, `Job.to_prompt()` |
+| [usage/extension-patterns.md](docs/usage/extension-patterns.md) | extension patterns built on `attach()` + ContextVars |
 | [usage/fastapi.md](docs/usage/fastapi.md) | lifespan integration, `capture_request`, two-shape pattern |
 | [usage/workers.md](docs/usage/workers.md) | `.submit()`, the leader process, the reaper |
 | [usage/errors.md](docs/usage/errors.md) | exception hierarchy, what to catch where |

@@ -232,7 +232,7 @@ list(recorded.query(kind="orders.place", key="order-42", limit=20))
 ```python
 conn = recorded.connection()
 cur = conn.execute("""
-    SELECT substr(submitted_at, 1, 13) AS hour,
+    SELECT strftime('%Y-%m-%d %H:00', submitted_at) AS hour,
            kind,
            COUNT(*) AS n
     FROM jobs
@@ -241,6 +241,11 @@ cur = conn.execute("""
     ORDER BY hour
 """)
 ```
+
+`submitted_at` is ISO-8601 UTC with `Z`, and it composes with SQLite date/time
+functions on current supported runtimes. For minute buckets,
+`strftime('%Y-%m-%d %H:%M', submitted_at)` works; `datetime(submitted_at)` also
+works when you want normalized datetime output.
 
 **Slow tail per kind:**
 

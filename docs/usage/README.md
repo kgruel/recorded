@@ -31,7 +31,10 @@ tour; the **By need** table below it is a faster path to a specific goal.
 8. **[queries.md](queries.md)** — `recorded.query(...)` filters, raw SQL
    via `connection()`, `Job.to_prompt()` for LLM consumption, schema
    reference.
-9. **[errors.md](errors.md)** — exception hierarchy, when each fires,
+9. **[extension-patterns.md](extension-patterns.md)** — `attach()` as an
+   extension side-channel: ContextVars + typed `data` metadata without
+   schema changes.
+10. **[errors.md](errors.md)** — exception hierarchy, when each fires,
    what to catch where.
 
 ---
@@ -45,6 +48,7 @@ tour; the **By need** table below it is a faster path to a specific goal.
 | run work in a separate process | [workers.md](workers.md) |
 | validate inputs/outputs against a model | [typed-slots.md](typed-slots.md) |
 | query the recorded log later | [queries.md](queries.md) |
+| add domain metadata without schema changes | [extension-patterns.md](extension-patterns.md) |
 | wire this into a FastAPI app | [fastapi.md](fastapi.md) |
 | know what exceptions to catch | [errors.md](errors.md) |
 | pick where the SQLite file lives | [configuration.md](configuration.md) |

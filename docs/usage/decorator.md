@@ -70,6 +70,17 @@ await fetch_async("...")  # await as before
 Async wrappers run all SQLite I/O via `asyncio.to_thread`, so the loop never
 blocks on disk.
 
+`async def` support is native. You do not need to wrap a sync recorder with
+`run_in_executor` just to use `recorded` from async code.
+
+```python
+@recorder(kind="quotes.fetch")
+async def fetch_quote(symbol: str) -> dict:
+    return await http_client.get_json(f"/quotes/{symbol}")
+
+quote = await fetch_quote("AAPL")
+```
+
 ## Cross-mode shims
 
 A wrapped function exposes `.sync` and `.async_run` so a caller in the "wrong"
@@ -92,6 +103,15 @@ function on the threadpool via `asyncio.to_thread` so it doesn't block the
 loop. ContextVars (and therefore `attach()` / `attach_error()`) propagate
 through `to_thread`.
 
+```python
+@recorder(kind="orders.place")
+def place_order(req: dict) -> dict:
+    return broker.place(req)
+
+# Async caller, sync decorated function:
+result = await place_order.async_run({"symbol": "AAPL", "qty": 10})
+```
+
 `attach()` has a typed-vs-bare contract: under `@recorder(data=Model)`, only
 keys declared on the model are allowed (unknown keys raise `AttachKeyError`
 at the call site); under bare `@recorder`, any key works. See
@@ -101,6 +121,33 @@ for the rationale and migration path.
 `.sync()` from inside a running event loop raises `SyncInLoopError` — running
 `asyncio.run` while a loop is already running would deadlock or silently
 misbehave. Use `await fn(...)` instead.
+
+## ContextVars and `ThreadPoolExecutor`
+
+Python `ContextVar` values do not propagate to `ThreadPoolExecutor` workers by
+default. This matters when you use ContextVars to carry cross-cutting state
+(`request_id`, `tenant_id`, feature flags, parent links) and consume that state
+inside `attach()` calls.
+
+Use `recorded.copy_context_run(...)` when submitting work to an executor:
+
+```python
+from concurrent.futures import ThreadPoolExecutor
+from recorded import copy_context_run
+
+with ThreadPoolExecutor(max_workers=4) as pool:
+    future = pool.submit(copy_context_run(run_one_call), payload)
+    result = future.result()
+```
+
+If you prefer the stdlib form directly, this is equivalent:
+
+```python
+import contextvars
+
+with ThreadPoolExecutor(max_workers=4) as pool:
+    future = pool.submit(contextvars.copy_context().run, run_one_call, payload)
+```
 
 ## Call-site parameters
 

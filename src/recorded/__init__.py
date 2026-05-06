@@ -18,7 +18,7 @@ from collections.abc import Iterator, Sequence
 from datetime import datetime
 from typing import Any
 
-from ._context import attach, attach_error
+from ._context import attach, attach_error, copy_context_run
 from ._decorator import recorder
 from ._errors import (
     AttachKeyError,
@@ -102,6 +102,7 @@ __all__ = [
     "JobHandle",
     "attach",
     "attach_error",
+    "copy_context_run",
     "configure",
     "connection",
     "health",

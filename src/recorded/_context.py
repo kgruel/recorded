@@ -14,7 +14,8 @@ different tasks see isolated buffers.
 
 from __future__ import annotations
 
-from contextvars import ContextVar
+from collections.abc import Callable
+from contextvars import Context, ContextVar, copy_context
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -100,3 +101,21 @@ def attach_error(payload: Any) -> None:
     if ctx is None:
         return
     ctx.error_buffer = payload
+
+
+def copy_context_run(fn: Callable[..., Any]) -> Callable[..., Any]:
+    """Return a wrapped callable that runs `fn` in a copied context.
+
+    `ThreadPoolExecutor` does not propagate `ContextVar` state by default.
+    For submitters that accept `submit(callable, *args, **kwargs)`, this
+    helper captures the current context and returns a wrapped callable.
+    Use it as:
+
+    `pool.submit(copy_context_run(fn), *args, **kwargs)`
+    """
+    ctx: Context = copy_context()
+
+    def wrapped(*args: Any, **kwargs: Any) -> Any:
+        return ctx.run(fn, *args, **kwargs)
+
+    return wrapped
