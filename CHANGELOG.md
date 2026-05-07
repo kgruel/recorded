@@ -4,6 +4,54 @@ Notable changes per release. Project follows [Semantic Versioning](https://semve
 
 ## [Unreleased]
 
+## [0.2.0] — 2026-05-07
+
+Substrate discoverability and observability. No breaking changes; two
+additive public symbols and a README/docs reframe driven by reader
+feedback.
+
+### Added
+
+- **`recorded.health()`** — single-call store observability snapshot
+  returning `db_size_mb`, `total_rows`, `oldest_row`, `newest_row`,
+  `rows_last_hour`, `last_failed_at`, `leader_running`. Substrate-level:
+  includes `_recorded.*` rows by design so health reflects the full
+  store, not just user-visible function rows.
+- **`recorded.copy_context_run`** — `contextvars.copy_context`-based
+  helper for forwarding the recorder's `ContextVar` state across
+  `ThreadPoolExecutor.submit` (and similar executor boundaries that
+  don't propagate context automatically). Returns a wrapped callable
+  bound to the calling thread's context.
+
+### Documentation
+
+- README reframed around the general pattern ("wrap any computation you
+  want queryable and replayable") after two independent readers landed
+  on a job-queue/ops-infrastructure read of the library. Lead example
+  is now AST-parsing a file into a typed `FileMetrics` slot rather
+  than `place_order`.
+- New `docs/examples/05_codebase_scan.py` — pure-analysis worked
+  example: walks `src/recorded/` itself, projects four AST metrics into
+  a typed data slot, then queries the recorded space. `key=path:mtime`
+  makes re-runs incremental.
+- New `docs/usage/extension-patterns.md` — patterns for building on
+  top of the substrate, with mixed-domain examples.
+- `docs/usage/decorator.md` — ContextVar + `ThreadPoolExecutor`
+  gotcha documented alongside `copy_context_run`; async-native
+  recorder usage spelled out.
+- `docs/usage/queries.md` — `strftime` composability on `submitted_at`
+  for time-bucketed queries.
+- `docs/examples/README.md` routes "I think this is a job queue"
+  readers to `05_codebase_scan.py` first.
+
+### Fixed
+
+- `scripts/ci.sh` now runs `uv sync --extra dev` before invoking
+  `ruff` / `ty` / `pytest`, so a fresh checkout doesn't fail at the
+  first lint step.
+- Stale `sqlite-api-job` path references in `docs/examples/01_*.py`
+  and `02_*.py` corrected.
+
 ## [0.1.0] — 2026-04-28 — Initial release
 
 First public release. The library records function calls to SQLite as a typed audit / idempotency log. Bare `@recorder` is the tier-1 surface; `.submit()` plus a separate leader process is the advanced tier.
