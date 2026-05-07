@@ -4,6 +4,41 @@ Notable changes per release. Project follows [Semantic Versioning](https://semve
 
 ## [Unreleased]
 
+## [0.2.0] — 2026-05-07
+
+Diagnostics surface plus a thread-pool ContextVar helper, on top of doc
+work that reframes the library around its general pattern.
+
+### Added
+
+- **`recorded.health()`** (and `Recorder.health()`) — single-call store
+  observability snapshot. Returns `db_size_mb`, `total_rows`,
+  `oldest_row`, `newest_row`, `rows_last_hour`, `last_failed_at`, and
+  `leader_running`. Substrate-level: includes `_recorded.*` rows by
+  design, so a single probe covers row-shape and worker-liveness.
+- **`recorded.copy_context_run`** — wraps a callable to run inside a
+  copied `contextvars.Context`. Bridges the `ThreadPoolExecutor` gap
+  where `ContextVar` state (used by `attach()` / `attach_error()`) is
+  not propagated to worker threads by default. Use as
+  `pool.submit(copy_context_run(fn), *args, **kwargs)`.
+
+### Documentation
+
+- README reframed around the general pattern, with a pure-analysis
+  example (`docs/examples/05_codebase_scan.py`).
+- New `docs/usage/extension-patterns.md` with mixed-domain examples.
+- `docs/usage/decorator.md` now documents async-native recorder use and
+  the `ThreadPoolExecutor` + `ContextVar` gotcha (with
+  `copy_context_run` as the fix).
+- `docs/usage/queries.md` notes `strftime` composability on
+  `submitted_at`.
+- Stale `sqlite-api-job` example paths corrected.
+
+### Internal
+
+- `scripts/ci.sh` now `uv sync --extra dev` before running ruff / ty /
+  pytest, so a fresh checkout doesn't fail on missing dev deps.
+
 ## [0.1.0] — 2026-04-28 — Initial release
 
 First public release. The library records function calls to SQLite as a typed audit / idempotency log. Bare `@recorder` is the tier-1 surface; `.submit()` plus a separate leader process is the advanced tier.
